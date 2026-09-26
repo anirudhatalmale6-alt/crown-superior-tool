@@ -15,17 +15,22 @@ Option Explicit
 '      keys need Fn held down, which is why it may look dead.)
 '   2. In the window that opens: File, Import File, and pick this file.
 '   3. Close that window. You are back in the tool.
-'   4. Developer tab, Macros. Run CrownTestConnection.
+'   4. Developer tab, Macros, run CrownTestConnection.
 '
-' Before step 4, put your key on the CROWN_KEY line below, between the
-' quotes. You get it from
+' The first time you run it, it asks you for your key and remembers it.
+' There is nothing to edit in here and nothing to paste. Save the
+' workbook once afterwards so it keeps the key.
+'
+' Your key comes from
 '   https://crownsuperior.com/index.php?cf_action=apikey
-' signed in there as an administrator.
+' signed in there as an administrator. To change it later, run the
+' CrownSetKey macro.
 '
-' After that there is nothing to type. Developer, Macros, and run:
+' Developer, Macros, and the four things you can run:
 '   CrownTestConnection  - is the website answering, is my key right
 '   CrownLoadQuotes      - put the newest quotes on a sheet
 '   CrownWriteQuoteBack  - send a finished quote back to the website
+'   CrownSetKey          - type in a new key
 '
 ' The key is a password. Anyone who has it can read and write quotes
 ' and policies, so do not email it around, and if it gets out, press
@@ -33,11 +38,75 @@ Option Explicit
 ' =====================================================================
 
 Private Const CROWN_URL As String = "https://crownsuperior.com/index.php?cf_action=api"
-Private Const CROWN_KEY As String = "PUT-YOUR-KEY-HERE"
+
+' Where the key is kept: a hidden name inside this workbook, so it is
+' typed once and never goes near the code.
+Private Const CROWN_KEY_NAME As String = "CrownSuperiorKey"
 
 ' Forms this reaches. 18 is Get Your Quote, 11 is the policy.
 Public Const CROWN_FORM_QUOTE As Long = 18
 Public Const CROWN_FORM_POLICY As Long = 11
+
+
+' ---------------------------------------------------------------------
+' The key
+'
+' Kept in the workbook itself rather than in this code, so nobody has
+' to find a line and paste into it. Asked for once, then remembered.
+' ---------------------------------------------------------------------
+
+Private Function CrownKey(Optional ByVal askIfMissing As Boolean = True) As String
+    Dim nm As Object
+    Dim value As String
+
+    On Error Resume Next
+    Set nm = ThisWorkbook.Names(CROWN_KEY_NAME)
+    On Error GoTo 0
+
+    If Not nm Is Nothing Then
+        value = nm.RefersTo                  ' comes back looking like ="thekey"
+        If Left$(value, 1) = "=" Then value = Mid$(value, 2)
+        value = Replace(value, """", "")
+        value = Trim$(value)
+    End If
+
+    If Len(value) = 0 And askIfMissing Then
+        value = Trim$(InputBox( _
+            "Paste your Crown Superior key." & vbCrLf & vbCrLf & _
+            "You get it from crownsuperior.com/index.php?cf_action=apikey" & vbCrLf & _
+            "while signed in there as an administrator." & vbCrLf & vbCrLf & _
+            "It is only asked for once.", "Crown Superior"))
+
+        If Len(value) > 0 Then CrownStoreKey value
+    End If
+
+    CrownKey = value
+End Function
+
+Private Sub CrownStoreKey(ByVal value As String)
+    On Error Resume Next
+    ThisWorkbook.Names(CROWN_KEY_NAME).Delete
+    On Error GoTo 0
+
+    ThisWorkbook.Names.Add Name:=CROWN_KEY_NAME, RefersTo:="=""" & value & """", Visible:=False
+End Sub
+
+' Run this from Developer > Macros to put a different key in.
+Public Sub CrownSetKey()
+    Dim current As String, value As String
+
+    current = CrownKey(False)
+
+    value = Trim$(InputBox( _
+        "Paste your Crown Superior key." & vbCrLf & vbCrLf & _
+        "From crownsuperior.com/index.php?cf_action=apikey, signed in there as an administrator.", _
+        "Crown Superior", current))
+
+    If Len(value) = 0 Then Exit Sub
+
+    CrownStoreKey value
+    MsgBox "Saved. Save the workbook once so it is still here next time.", vbInformation, "Crown Superior"
+End Sub
 
 
 ' ---------------------------------------------------------------------
@@ -90,7 +159,7 @@ Private Function Enc(ByVal text As String) As String
 End Function
 
 Private Function Body(ByVal action As String) As String
-    Body = "do=" & Enc(action) & "&key=" & Enc(CROWN_KEY)
+    Body = "do=" & Enc(action) & "&key=" & Enc(CrownKey())
 End Function
 
 ' Quote a value for JSON.
@@ -329,17 +398,17 @@ End Function
 Public Sub CrownTestConnection()
     Dim answer As String
 
-    If CROWN_KEY = "PUT-YOUR-KEY-HERE" Then
-        MsgBox "The key has not been filled in yet." & vbCrLf & vbCrLf & _
-               "Developer, Visual Basic, open CrownAPI on the left, and put your key " & _
-               "on the CROWN_KEY line at the top, between the quotes.", vbExclamation, "Crown Superior"
+    If Len(CrownKey()) = 0 Then
+        MsgBox "No key, so there is nothing to test yet." & vbCrLf & vbCrLf & _
+               "Run this again and paste the key when it asks.", vbExclamation, "Crown Superior"
         Exit Sub
     End If
 
     answer = CrownPost(Body("ping"))
 
     If InStr(1, answer, """ok"":true", vbTextCompare) > 0 Then
-        MsgBox "Connected. The website answered and the key is right.", vbInformation, "Crown Superior"
+        MsgBox "Connected. The website answered and the key is right." & vbCrLf & vbCrLf & _
+               "Save the workbook once so it keeps the key.", vbInformation, "Crown Superior"
     ElseIf InStr(1, answer, "bad-key", vbTextCompare) > 0 Then
         MsgBox "The website answered, but it does not recognise that key." & vbCrLf & vbCrLf & _
                "Check it against crownsuperior.com/index.php?cf_action=apikey", vbExclamation, "Crown Superior"
@@ -355,8 +424,8 @@ Public Sub CrownLoadQuotes()
     Dim how As String, count As Long, written As Long, lastId As Long
     Dim target As Object
 
-    If CROWN_KEY = "PUT-YOUR-KEY-HERE" Then
-        MsgBox "Put your key in first - see CrownTestConnection.", vbExclamation, "Crown Superior"
+    If Len(CrownKey()) = 0 Then
+        MsgBox "No key yet - run CrownTestConnection and paste it when it asks.", vbExclamation, "Crown Superior"
         Exit Sub
     End If
 
@@ -393,8 +462,8 @@ Public Sub CrownWriteQuoteBack()
     Dim answer As String
     Dim names As Variant, values As Variant
 
-    If CROWN_KEY = "PUT-YOUR-KEY-HERE" Then
-        MsgBox "Put your key in first - see CrownTestConnection.", vbExclamation, "Crown Superior"
+    If Len(CrownKey()) = 0 Then
+        MsgBox "No key yet - run CrownTestConnection and paste it when it asks.", vbExclamation, "Crown Superior"
         Exit Sub
     End If
 
