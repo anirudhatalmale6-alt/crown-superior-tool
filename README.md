@@ -12,18 +12,22 @@ finished quotes back to it, without opening a browser or filling in a web form.
 3. Close that window.
 4. Back in the tool: **Developer → Macros → CrownTestConnection → Run.**
 
-Before step 4, put your key on the `CROWN_KEY` line at the top of the module.
-You get it from `https://crownsuperior.com/index.php?cf_action=apikey`, signed in
-there as an administrator. The key is a password — anyone who has it can read and
-write quotes and policies.
+The first time it runs it asks for your key and remembers it. **There is nothing
+to edit and nothing to paste into the code.** Save the workbook once afterwards
+so it keeps the key.
 
-## The three things you can run
+Your key comes from `https://crownsuperior.com/index.php?cf_action=apikey`, signed
+in there as an administrator. To change it later, run the **CrownSetKey** macro.
+The key is a password — anyone who has it can read and write quotes and policies.
+
+## The things you can run
 
 | Macro | What it does |
 | --- | --- |
 | `CrownTestConnection` | Says whether the website is answering and the key is right |
 | `CrownLoadQuotes` | Puts the newest quotes on a sheet called **Crown Quotes** |
 | `CrownWriteQuoteBack` | Asks for a quote number, company, policy number and amount, and writes them onto that quote |
+| `CrownSetKey` | Type in a different key |
 
 The first column on the Crown Quotes sheet is the quote number. That is what
 `CrownWriteQuoteBack` asks for.
