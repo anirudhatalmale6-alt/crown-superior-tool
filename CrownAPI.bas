@@ -113,7 +113,7 @@ End Sub
 ' The plumbing
 ' ---------------------------------------------------------------------
 
-Private Function CrownPost(ByVal body As String) As String
+Public Function CrownPost(ByVal body As String) As String
     Dim http As Object
 
     Set http = CreateObject("MSXML2.ServerXMLHTTP.6.0")
@@ -127,7 +127,7 @@ End Function
 
 ' Percent-encoding. Written out rather than borrowed, because the
 ' library ones differ between 32 and 64 bit Office.
-Private Function Enc(ByVal text As String) As String
+Public Function CrownEnc(ByVal text As String) As String
     Dim bytes() As Byte
     Dim stream As Object
     Dim i As Long, b As Long, out As String
@@ -155,11 +155,11 @@ Private Function Enc(ByVal text As String) As String
         End If
     Next i
 
-    Enc = out
+    CrownEnc = out
 End Function
 
-Private Function Body(ByVal action As String) As String
-    Body = "do=" & Enc(action) & "&key=" & Enc(CrownKey())
+Public Function CrownBody(ByVal action As String) As String
+    CrownBody = "do=" & CrownEnc(action) & "&key=" & CrownEnc(CrownKey())
 End Function
 
 ' Quote a value for JSON.
@@ -183,7 +183,7 @@ End Function
 
 ' Is the door open and is the key right?
 Public Function CrownPing() As String
-    CrownPing = CrownPost(Body("ping"))
+    CrownPing = CrownPost(CrownBody("ping"))
     Debug.Print CrownPing
 End Function
 
@@ -197,12 +197,12 @@ Public Function CrownListCsv(ByVal formId As Long, ByVal sinceId As Long, _
                              ByVal limit As Long, ByVal fields As String) As String
     Dim body As String
 
-    body = Body("list") _
+    body = CrownBody("list") _
          & "&form=" & formId _
          & "&since_id=" & sinceId _
          & "&limit=" & limit _
          & "&format=csv" _
-         & "&fields=" & Enc(fields)
+         & "&fields=" & CrownEnc(fields)
 
     CrownListCsv = CrownPost(body)
 End Function
@@ -212,11 +212,11 @@ Public Function CrownGetCsv(ByVal formId As Long, ByVal recordId As Long, _
                             ByVal fields As String) As String
     Dim body As String
 
-    body = Body("get") _
+    body = CrownBody("get") _
          & "&form=" & formId _
          & "&id=" & recordId _
          & "&format=csv" _
-         & "&fields=" & Enc(fields)
+         & "&fields=" & CrownEnc(fields)
 
     CrownGetCsv = CrownPost(body)
 End Function
@@ -255,10 +255,10 @@ Public Function CrownUpdate(ByVal formId As Long, ByVal recordId As Long, _
                             ByRef names As Variant, ByRef values As Variant) As String
     Dim body As String
 
-    body = Body("update") _
+    body = CrownBody("update") _
          & "&form=" & formId _
          & "&id=" & recordId _
-         & "&values=" & Enc(CrownJson(names, values))
+         & "&values=" & CrownEnc(CrownJson(names, values))
 
     CrownUpdate = CrownPost(body)
 End Function
@@ -268,9 +268,9 @@ Public Function CrownCreate(ByVal formId As Long, _
                             ByRef names As Variant, ByRef values As Variant) As String
     Dim body As String
 
-    body = Body("create") _
+    body = CrownBody("create") _
          & "&form=" & formId _
-         & "&values=" & Enc(CrownJson(names, values))
+         & "&values=" & CrownEnc(CrownJson(names, values))
 
     CrownCreate = CrownPost(body)
 End Function
@@ -404,7 +404,7 @@ Public Sub CrownTestConnection()
         Exit Sub
     End If
 
-    answer = CrownPost(Body("ping"))
+    answer = CrownPost(CrownBody("ping"))
 
     If InStr(1, answer, """ok"":true", vbTextCompare) > 0 Then
         MsgBox "Connected. The website answered and the key is right." & vbCrLf & vbCrLf & _
@@ -492,7 +492,7 @@ Public Sub CrownWriteQuoteBack()
 End Sub
 
 ' A sheet by that name, made if it is not there yet.
-Private Function CrownSheet(ByVal sheetName As String) As Object
+Public Function CrownSheet(ByVal sheetName As String) As Object
     Dim ws As Object
 
     For Each ws In ActiveWorkbook.Worksheets
