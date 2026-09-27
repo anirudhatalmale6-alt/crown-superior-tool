@@ -50,13 +50,19 @@ Private Const COL_STATUS As Long = 8     ' H  Status
 ' carrier is optional. "United Auto", "UAIG" and "United" all mean the
 ' same insurer to the website.
 Public Function CrownPolicyIndex(Optional ByVal carrier As String = "") As Object
-    Dim csv As String, lines() As String, parts() As String
+    Dim csv As String, body As String, lines() As String, parts() As String
     Dim index As Object
     Dim i As Long, digits As String
 
     Set index = CreateObject("Scripting.Dictionary")
 
-    csv = CrownPost(CrownBody("policylist") & IIf(Len(carrier) > 0, "&carrier=" & CrownEnc(carrier), ""))
+    ' Built with a plain If, not IIf: IIf works out BOTH of its answers
+    ' before choosing one, so the carrier would be encoded even when there
+    ' is no carrier to encode.
+    body = CrownBody("policylist")
+    If Len(carrier) > 0 Then body = body & "&carrier=" & CrownEnc(carrier)
+
+    csv = CrownPost(body)
 
     If Len(csv) = 0 Then
         MsgBox "The website did not answer. Check your internet, then run CrownTestConnection.", _
