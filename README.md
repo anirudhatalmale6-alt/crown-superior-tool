@@ -1,7 +1,9 @@
 # Crown Superior — the tool's door into the website
 
-`CrownAPI.bas` lets the quoting tool read quotes from crownsuperior.com and write
-finished quotes back to it, without opening a browser or filling in a web form.
+Two modules. `CrownAPI.bas` is the door itself: the tool reads quotes and policies
+from crownsuperior.com and writes back to it without opening a browser or filling
+in a web form. `CrownPayments.bas` uses that door for payment information, in both
+directions. Import both.
 
 ## Putting it in
 
@@ -28,6 +30,18 @@ The key is a password — anyone who has it can read and write quotes and polici
 | `CrownLoadQuotes` | Puts the newest quotes on a sheet called **Crown Quotes** |
 | `CrownWriteQuoteBack` | Asks for a quote number, company, policy number and amount, and writes them onto that quote |
 | `CrownSetKey` | Type in a different key |
+
+From `CrownPayments.bas`:
+
+| Macro | What it does |
+| --- | --- |
+| `CrownUploadPaymentsDue` | Takes the **UploadPaymentdue** sheet as it is and writes every row onto the website — no browser, every carrier |
+| `CrownUaigPaymentDue` | Works through **our** United Auto policies, looks each one up in UAIG Policy Inquiry, and writes what is owed to the CrownPayments sheet and back to the website |
+
+`CrownUaigPaymentDue` takes its list of policies from the website, not from
+whichever UAIG report happens to be on screen, which is the difference between
+covering every policy we hold and covering whatever the first non-empty tab
+contained.
 
 The first column on the Crown Quotes sheet is the quote number. That is what
 `CrownWriteQuoteBack` asks for.
