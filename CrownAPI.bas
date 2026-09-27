@@ -129,8 +129,14 @@ End Function
 ' library ones differ between 32 and 64 bit Office.
 Public Function CrownEnc(ByVal text As String) As String
     Dim bytes() As Byte
+    Dim raw As Variant
     Dim stream As Object
     Dim i As Long, b As Long, out As String
+
+    ' Nothing to encode. This has to come first: with an empty string the
+    ' stream holds only its byte order mark, so reading past that returns
+    ' Null, and Null into a Byte array is a type mismatch.
+    If Len(text) = 0 Then Exit Function
 
     ' UTF-8 first, so accents and long dashes survive the trip.
     Set stream = CreateObject("ADODB.Stream")
@@ -141,8 +147,12 @@ Public Function CrownEnc(ByVal text As String) As String
     stream.Position = 0
     stream.Type = 1
     stream.Position = 3                    ' step over the byte order mark
-    bytes = stream.Read
+    raw = stream.Read
     stream.Close
+
+    If IsNull(raw) Or IsEmpty(raw) Then Exit Function
+
+    bytes = raw
 
     For i = LBound(bytes) To UBound(bytes)
         b = bytes(i)
