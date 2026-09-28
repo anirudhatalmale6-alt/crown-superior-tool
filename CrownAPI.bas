@@ -113,16 +113,57 @@ End Sub
 ' The plumbing
 ' ---------------------------------------------------------------------
 
+' Tries three times before giving up.
+'
+' Sending several hundred of these in a row, one will occasionally come
+' back as "the server returned an invalid or unrecognized response" -
+' a connection that was reused after the far end had quietly dropped it.
+' A fresh object and another go clears it. Asking for the connection to
+' be closed each time makes it rarer still.
+'
+' Returns "" if all three fail, so the caller can carry on to the next
+' record instead of the whole run stopping on one bad moment.
 Public Function CrownPost(ByVal body As String) As String
     Dim http As Object
+    Dim attempt As Long
+    Dim answer As String
+    Dim wentThrough As Boolean
+    Dim pause As Double
 
-    Set http = CreateObject("MSXML2.ServerXMLHTTP.6.0")
-    http.setTimeouts 15000, 15000, 30000, 120000
-    http.Open "POST", CROWN_URL, False
-    http.setRequestHeader "Content-Type", "application/x-www-form-urlencoded"
-    http.send body
+    For attempt = 1 To 3
+        answer = ""
+        wentThrough = False
 
-    CrownPost = http.responseText
+        On Error Resume Next
+        Err.Clear
+
+        Set http = CreateObject("MSXML2.ServerXMLHTTP.6.0")
+        http.setTimeouts 15000, 15000, 30000, 120000
+        http.Open "POST", CROWN_URL, False
+        http.setRequestHeader "Content-Type", "application/x-www-form-urlencoded"
+        http.setRequestHeader "Connection", "close"
+        http.send body
+
+        If Err.Number = 0 Then
+            answer = http.responseText
+            wentThrough = (Err.Number = 0)
+        End If
+
+        Err.Clear
+        On Error GoTo 0
+
+        Set http = Nothing
+
+        If wentThrough Then Exit For
+
+        ' A second between tries, without locking up Excel.
+        pause = Timer
+        Do While Timer < pause + 1
+            DoEvents
+        Loop
+    Next attempt
+
+    CrownPost = answer
 End Function
 
 ' Percent-encoding. Written out rather than borrowed, because the
