@@ -49,12 +49,10 @@ Private Const COL_STATUS As Long = 8     ' H  Status
 '
 ' carrier is optional. "United Auto", "UAIG" and "United" all mean the
 ' same insurer to the website.
-Public Function CrownPolicyIndex(Optional ByVal carrier As String = "") As Object
+Public Function CrownPolicyRows(Optional ByVal carrier As String = "") As Collection
     Dim csv As String, body As String, lines() As String, parts() As String
-    Dim index As Object
-    Dim i As Long, digits As String
-
-    Set index = CreateObject("Scripting.Dictionary")
+    Dim rows As New Collection
+    Dim i As Long
 
     ' Built with a plain If, not IIf: IIf works out BOTH of its answers
     ' before choosing one, so the carrier would be encoded even when there
@@ -67,13 +65,13 @@ Public Function CrownPolicyIndex(Optional ByVal carrier As String = "") As Objec
     If Len(csv) = 0 Then
         MsgBox "The website did not answer. Check your internet, then run CrownTestConnection.", _
                vbExclamation, "Crown Superior"
-        Set CrownPolicyIndex = index
+        Set CrownPolicyRows = rows
         Exit Function
     End If
 
     If Left$(csv, 5) = "error" Then
         MsgBox "The website answered: " & csv, vbExclamation, "Crown Superior"
-        Set CrownPolicyIndex = index
+        Set CrownPolicyRows = rows
         Exit Function
     End If
 
@@ -83,19 +81,58 @@ Public Function CrownPolicyIndex(Optional ByVal carrier As String = "") As Objec
         If Len(Trim$(lines(i))) > 0 Then
             parts = CrownSplitCsvLine(lines(i))
 
-            If UBound(parts) >= 2 Then
-                digits = CrownDigits(parts(2))    ' the policy number
-
-                ' The newest record wins: the list comes back newest first,
-                ' so the first one seen for a number is the one to write to.
-                If Len(digits) > 0 And Not index.Exists(digits) Then
-                    index.Add digits, parts(0)    ' -> record number
-                End If
-            End If
+            ' 0 record number, 2 policy number, 3 carrier, 4 first, 5 last
+            If UBound(parts) >= 5 Then rows.Add parts
         End If
     Next i
 
+    Set CrownPolicyRows = rows
+End Function
+
+' The policies, by the digits in their policy number.
+Public Function CrownPolicyIndex(Optional ByVal carrier As String = "") As Object
+    Dim rows As Collection, parts As Variant
+    Dim index As Object
+    Dim digits As String
+
+    Set index = CreateObject("Scripting.Dictionary")
+    Set rows = CrownPolicyRows(carrier)
+
+    For Each parts In rows
+        digits = CrownDigits(parts(2))
+
+        ' The list comes back newest first, so the first one seen for a
+        ' number is the newest record with it.
+        If Len(digits) > 0 And Not index.Exists(digits) Then
+            index.Add digits, parts(0)
+        End If
+    Next parts
+
     Set CrownPolicyIndex = index
+End Function
+
+' The policy number in a cell, as it was really typed.
+'
+' A long one like 100332072503 is held by Excel as a number and comes
+' back from CStr as "1.00332072503E+11", which has no policy number in
+' it at all. Formatting it as a plain integer gets the digits back.
+' Takes the cell itself, not its contents: passing a Range into a Variant
+' hands over the value, and a value has no .Value to read.
+Public Function CrownCellText(ByVal cell As Range) As String
+    Dim value As Variant
+
+    value = cell.value
+
+    If IsEmpty(value) Then Exit Function
+
+    If IsNumeric(value) And Not IsDate(value) Then
+        If value = Int(value) And Abs(value) < 1E+15 Then
+            CrownCellText = Format$(value, "0")
+            Exit Function
+        End If
+    End If
+
+    CrownCellText = Trim$(CStr(value))
 End Function
 
 ' The digits in a policy number, and nothing else.
@@ -129,11 +166,15 @@ End Function
 
 Public Sub CrownUploadPaymentsDue()
     Dim wsUpload As Worksheet, wsLog As Worksheet
-    Dim index As Object
+    Dim rows As Collection, parts As Variant
+    Dim byNumber As Object, byName As Object
     Dim lastRow As Long, i As Long, logRow As Long
-    Dim digits As String, recordId As String, answer As String
+    Dim policyText As String, digits As String, tail As String
+    Dim recordId As String, matchedOn As String, note As String
+    Dim carrier As String, nameKey As String, answer As String
     Dim done As Long, missing As Long, refused As Long
     Dim names As Variant, values As Variant
+    Dim candidates As Variant, j As Long
 
     On Error Resume Next
     Set wsUpload = ThisWorkbook.Worksheets("UploadPaymentdue")
@@ -144,22 +185,107 @@ Public Sub CrownUploadPaymentsDue()
         Exit Sub
     End If
 
-    Set index = CrownPolicyIndex()
-    If index.Count = 0 Then Exit Sub
+    Set rows = CrownPolicyRows()
+    If rows.Count = 0 Then Exit Sub
+
+    ' Two ways of finding a record: by the digits in the policy number, and
+    ' by the customer's name. The numbers on this sheet are the carrier's,
+    ' and the carrier issues a new one on a rewrite, so a policy we hold can
+    ' easily be under a different number here.
+    Set byNumber = CreateObject("Scripting.Dictionary")
+    Set byName = CreateObject("Scripting.Dictionary")
+
+    For Each parts In rows
+        digits = CrownDigits(parts(2))
+        If Len(digits) > 0 And Not byNumber.Exists(digits) Then byNumber.Add digits, parts
+
+        nameKey = UCase$(Trim$(parts(4)) & "|" & Trim$(parts(5)))
+
+        If Len(Replace(nameKey, "|", "")) > 0 Then
+            If byName.Exists(nameKey) Then
+                candidates = byName(nameKey)
+                ReDim Preserve candidates(UBound(candidates) + 1)
+                candidates(UBound(candidates)) = parts
+                byName(nameKey) = candidates
+            Else
+                byName.Add nameKey, Array(parts)
+            End If
+        End If
+    Next parts
 
     Set wsLog = CrownSheet("CrownUploadLog")
     wsLog.Cells.ClearContents
-    wsLog.Range("A1:J1").value = Array("Policy Number", "Website", "First Name", "Last Name", _
-                                       "Cancel Date", "Amount Due", "Due Date", "Status", "When", "What happened")
+    wsLog.Columns(1).NumberFormat = "@"          ' policy numbers are text, not sums
+    wsLog.Range("A1:K1").value = Array("Policy Number", "Website", "First Name", "Last Name", _
+                                       "Cancel Date", "Amount Due", "Due Date", "Status", _
+                                       "When", "Matched on", "What happened")
     logRow = 2
 
     lastRow = wsUpload.Cells(wsUpload.rows.Count, COL_POLICY).End(xlUp).row
 
     For i = 2 To lastRow
-        If Trim$(CStr(wsUpload.Cells(i, COL_POLICY).value)) <> "" Then
-            digits = CrownDigits(CStr(wsUpload.Cells(i, COL_POLICY).value))
+        policyText = CrownCellText(wsUpload.Cells(i, COL_POLICY))
 
-            wsLog.Cells(logRow, 1).value = wsUpload.Cells(i, COL_POLICY).value
+        If Len(Trim$(policyText)) > 0 Then
+            digits = CrownDigits(policyText)
+            carrier = Trim$(CStr(wsUpload.Cells(i, COL_SITE).value))
+            nameKey = UCase$(Trim$(CStr(wsUpload.Cells(i, COL_FIRST).value)) & "|" & _
+                             Trim$(CStr(wsUpload.Cells(i, COL_LAST).value)))
+            recordId = ""
+            matchedOn = ""
+            note = ""
+
+            ' 1. the whole policy number
+            If byNumber.Exists(digits) Then
+                parts = byNumber(digits)
+                recordId = parts(0)
+                matchedOn = "policy number"
+            End If
+
+            ' 2. the part after the last hyphen, which is what the old macro
+            '    searched on for United Auto
+            If Len(recordId) = 0 And InStr(policyText, "-") > 0 Then
+                tail = CrownDigits(Mid$(policyText, InStrRev(policyText, "-") + 1))
+
+                If Len(tail) > 0 And byNumber.Exists(tail) Then
+                    parts = byNumber(tail)
+                    recordId = parts(0)
+                    matchedOn = "end of the policy number"
+                End If
+            End If
+
+            ' 3. the customer's name, and only when it points at one policy
+            If Len(recordId) = 0 And byName.Exists(nameKey) Then
+                candidates = byName(nameKey)
+                note = ""
+
+                For j = LBound(candidates) To UBound(candidates)
+                    parts = candidates(j)
+
+                    If Len(carrier) = 0 Or CrownSameCarrier(carrier, CStr(parts(3))) Then
+                        If Len(recordId) = 0 Then
+                            recordId = parts(0)
+                            matchedOn = "name"
+                            If Len(carrier) > 0 Then matchedOn = "name and carrier"
+                        Else
+                            ' more than one - too risky to pick
+                            recordId = ""
+                            matchedOn = ""
+                            note = "That name has more than one policy here: "
+                            Exit For
+                        End If
+                    End If
+                Next j
+
+                If Len(note) > 0 Then
+                    For j = LBound(candidates) To UBound(candidates)
+                        parts = candidates(j)
+                        note = note & parts(0) & " " & parts(2) & " (" & parts(3) & ")  "
+                    Next j
+                End If
+            End If
+
+            wsLog.Cells(logRow, 1).value = policyText
             wsLog.Cells(logRow, 2).value = wsUpload.Cells(i, COL_SITE).value
             wsLog.Cells(logRow, 3).value = wsUpload.Cells(i, COL_FIRST).value
             wsLog.Cells(logRow, 4).value = wsUpload.Cells(i, COL_LAST).value
@@ -168,13 +294,13 @@ Public Sub CrownUploadPaymentsDue()
             wsLog.Cells(logRow, 7).value = wsUpload.Cells(i, COL_DUE).value
             wsLog.Cells(logRow, 8).value = wsUpload.Cells(i, COL_STATUS).value
             wsLog.Cells(logRow, 9).value = Now
+            wsLog.Cells(logRow, 10).value = matchedOn
 
-            If Not index.Exists(digits) Then
-                wsLog.Cells(logRow, 10).value = "No policy with that number on the website"
+            If Len(recordId) = 0 Then
+                If Len(note) = 0 Then note = "No policy on the website with that number or that name"
+                wsLog.Cells(logRow, 11).value = note
                 missing = missing + 1
             Else
-                recordId = index(digits)
-
                 names = Array("Web_pymnt_due", "updated_due_date", "updated_cancel_date", _
                               "Status_", "Update_due_dates", "Last_Updated")
                 values = Array(Trim$(CStr(wsUpload.Cells(i, COL_AMOUNT).value)), _
@@ -187,10 +313,13 @@ Public Sub CrownUploadPaymentsDue()
                 answer = CrownUpdate(CROWN_FORM_POLICY, CLng(recordId), names, values)
 
                 If InStr(1, answer, """ok"":true", vbTextCompare) > 0 Then
-                    wsLog.Cells(logRow, 10).value = "Written to record " & recordId
+                    wsLog.Cells(logRow, 11).value = "Written to record " & recordId
                     done = done + 1
+                ElseIf Len(Trim$(answer)) = 0 Then
+                    wsLog.Cells(logRow, 11).value = "The website did not answer - try this row again"
+                    refused = refused + 1
                 Else
-                    wsLog.Cells(logRow, 10).value = "Refused: " & answer
+                    wsLog.Cells(logRow, 11).value = "Refused: " & answer
                     refused = refused + 1
                 End If
             End If
@@ -199,14 +328,55 @@ Public Sub CrownUploadPaymentsDue()
         End If
     Next i
 
+    wsLog.Columns("A:K").AutoFit
     wsLog.Activate
 
     MsgBox done & " policy record(s) updated on the website." & vbCrLf & _
-           missing & " had no matching policy number there." & vbCrLf & _
-           refused & " were refused - see the CrownUploadLog sheet." & vbCrLf & vbCrLf & _
-           "The Google Sheet picks these up within the hour on its own.", _
+           missing & " could not be matched to a policy there." & vbCrLf & _
+           refused & " were refused or did not go through." & vbCrLf & vbCrLf & _
+           "The CrownUploadLog sheet says what happened to every row, and how each " & _
+           "one was matched." & vbCrLf & vbCrLf & _
+           "The Google Sheet picks the changes up within the hour on its own.", _
            vbInformation, "Crown Superior"
 End Sub
+
+' Two ways of writing the same insurer. Loose on purpose: the sheet says
+' "United Au" or "UAIG" where the website says "United Auto".
+Public Function CrownSameCarrier(ByVal a As String, ByVal b As String) As Boolean
+    Dim x As String, y As String
+
+    x = UCase$(Trim$(a))
+    y = UCase$(Trim$(b))
+
+    If Len(x) = 0 Or Len(y) = 0 Then
+        CrownSameCarrier = True
+        Exit Function
+    End If
+
+    If x = y Then
+        CrownSameCarrier = True
+        Exit Function
+    End If
+
+    If InStr(1, y, x, vbTextCompare) = 1 Or InStr(1, x, y, vbTextCompare) = 1 Then
+        CrownSameCarrier = True
+        Exit Function
+    End If
+
+    If (InStr(1, x, "UNITED", vbTextCompare) > 0 Or InStr(1, x, "UAIG", vbTextCompare) > 0) _
+       And InStr(1, y, "UNITED", vbTextCompare) > 0 Then
+        CrownSameCarrier = True
+        Exit Function
+    End If
+
+    If (InStr(1, x, "VERVE", vbTextCompare) > 0 Or InStr(1, x, "TRISURA", vbTextCompare) > 0) _
+       And (InStr(1, y, "VERVE", vbTextCompare) > 0 Or InStr(1, y, "TRISURA", vbTextCompare) > 0) Then
+        CrownSameCarrier = True
+        Exit Function
+    End If
+
+    CrownSameCarrier = False
+End Function
 
 
 ' ---------------------------------------------------------------------
@@ -236,6 +406,7 @@ Public Sub CrownUaigPaymentDue()
 
     Set ws = CrownSheet("CrownPayments")
     ws.Cells.ClearContents
+    ws.Columns(2).NumberFormat = "@"       ' a long policy number is not a sum
     ws.Range("A1:H1").value = Array("Record number", "Policy number", "Amount due", "Due date", _
                                     "Cancel date", "Policy status", "When", "Written back")
     row = 2
@@ -337,6 +508,8 @@ Public Sub CrownUaigPaymentDue()
             If InStr(1, answer, """ok"":true", vbTextCompare) > 0 Then
                 ws.Cells(row, 8).value = "written"
                 done = done + 1
+            ElseIf Len(Trim$(answer)) = 0 Then
+                ws.Cells(row, 8).value = "website did not answer - run again for this one"
             Else
                 ws.Cells(row, 8).value = "refused: " & answer
             End If
