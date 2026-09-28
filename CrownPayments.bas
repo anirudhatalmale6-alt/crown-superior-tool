@@ -29,6 +29,15 @@ Option Explicit
 ' A term cancelled or expired longer ago than this is of no use to anyone.
 Private Const UAIG_STALE_DAYS As Long = 60
 
+' The boxes and labels on Verve's own pages, named once so a change on
+' their side is one line here rather than a hunt through the code.
+Private Const VERVE_LOOKUP_BOX As String = "QuickPolicyLookupControl_NumberInsCombo_I"
+Private Const VERVE_LOOKUP_GO As String = "QuickPolicyLookupControl_FireLookupImageButton"
+Private Const VERVE_BILLING_TAB As String = "//*[@id='TabBar']/ul/li[5]/div/a"
+Private Const VERVE_ACTIVITY As String = "P_L_v212w3_t4_ActivityStringInsLabel"
+Private Const VERVE_DUE_DATE As String = "P_L_v212w3_t4_DueDateInsLabel"
+Private Const VERVE_BALANCE As String = "P_L_v212w3_t4_CurrentBalanceInsLabel"
+
 Private Const COL_POLICY As Long = 1     ' A  Policy Number
 Private Const COL_SITE As Long = 2       ' B  Website (the carrier)
 Private Const COL_FIRST As Long = 3      ' C  First Name
@@ -929,4 +938,328 @@ Public Function CrownLongDate(ByVal text As String) As String
     Else
         CrownLongDate = Format$(CDate(when), "mmmm d, yyyy")
     End If
+End Function
+
+
+' ---------------------------------------------------------------------
+' 4. Trisura (Verve), one policy at a time
+' ---------------------------------------------------------------------
+'
+' Same shape as the United one, and for the same reason: the list of what
+' to look up comes from our website, so no report has to be downloaded,
+' opened, trimmed and re-saved first. The sign-in and the page reading are
+' his own, taken from ScrapeVervePaymentdue - the same boxes, the same
+' labels, the same wait for the grey panel to go away.
+'
+' What Verve says about money lives on one line of text:
+'
+'   "Installment For $239.17 due on 9/29/2025"
+'   "... Cancel Date: 10/12/2025"
+'
+' The first means a live schedule; the second means a cancellation is on
+' the way, and the amount and date are then read from their own labels.
+'
+' Verve policy numbers have letters in them - GAF20108199 - so unlike
+' United they are sent exactly as we hold them.
+
+' Waits for something, and gives up rather than spinning.
+'
+' Not LoopElementUntilFound: its second loop has no counter and no pause
+' in it, so an element that is present but never shown turns into a busy
+' loop and Excel stops answering. Counted rather than timed, because
+' Timer goes back to zero at midnight and a run can cross it.
+Private Function CrownWaitFor(ByVal drv As Object, ByVal By As Object, _
+                              ByVal how As String, ByVal what As String, _
+                              Optional ByVal seconds As Double = 20) As Boolean
+    Dim tries As Long, most As Long
+    Dim there As Boolean
+
+    most = CLng(seconds * 4)
+    If most < 1 Then most = 1
+
+    For tries = 1 To most
+        there = False
+
+        On Error Resume Next
+        If UCase$(how) = "ID" Then
+            there = drv.IsElementPresent(By.ID(what))
+        Else
+            there = drv.IsElementPresent(By.xpath(what))
+        End If
+        On Error GoTo 0
+
+        If there Then
+            CrownWaitFor = True
+            Exit Function
+        End If
+
+        drv.Wait 250
+        DoEvents
+    Next tries
+End Function
+
+' Everything after a marker, or nothing at all.
+'
+' Written with InStr rather than Split: Split(text, marker)(1) on text
+' that does not contain the marker is a subscript error, and the only
+' thing holding his version together is an On Error above it.
+Private Function CrownAfter(ByVal text As String, ByVal marker As String) As String
+    Dim at As Long
+
+    at = InStr(1, text, marker, vbTextCompare)
+    If at = 0 Then Exit Function
+
+    CrownAfter = Trim$(Mid$(text, at + Len(marker)))
+End Function
+
+Private Function CrownBetween(ByVal text As String, ByVal after As String, ByVal upto As String) As String
+    Dim rest As String
+    Dim at As Long
+
+    rest = CrownAfter(text, after)
+    If Len(rest) = 0 Then Exit Function
+
+    at = InStr(1, rest, upto, vbTextCompare)
+
+    If at = 0 Then
+        CrownBetween = rest
+    Else
+        CrownBetween = Trim$(Left$(rest, at - 1))
+    End If
+End Function
+
+' The first thing in a piece of text that is really a date.
+'
+' "due on 9/29/2025 (see schedule)" gives 9/29/2025 and not the rest of
+' the sentence - a whole sentence written into a date field on the
+' website is not something anyone would notice until it mattered.
+Private Function CrownFirstDate(ByVal text As String) As String
+    Dim i As Long
+    Dim ch As String, run As String
+
+    For i = 1 To Len(text) + 1
+        If i <= Len(text) Then ch = Mid$(text, i, 1) Else ch = " "
+
+        If (ch >= "0" And ch <= "9") Or ch = "/" Or ch = "-" Then
+            run = run & ch
+        Else
+            If CrownUsDate(run) > 0 Then
+                CrownFirstDate = run
+                Exit Function
+            End If
+
+            run = ""
+        End If
+    Next i
+End Function
+
+' An amount with the dollar sign and the thousands commas taken off.
+Private Function CrownMoney(ByVal text As String) As String
+    Dim i As Long, ch As String, out As String
+
+    For i = 1 To Len(text)
+        ch = Mid$(text, i, 1)
+
+        If (ch >= "0" And ch <= "9") Or ch = "." Then
+            out = out & ch
+        ElseIf ch = "-" And Len(out) = 0 Then
+            out = "-"
+        End If
+    Next i
+
+    CrownMoney = out
+End Function
+
+
+Public Sub CrownVervePaymentDue()
+    Dim drv As ChromeDriver, clsDrv As Chrm
+    Dim By As New Selenium.By
+    Dim Keys As New Selenium.Keys
+    Dim wsInput As Worksheet, ws As Worksheet
+    Dim policies As Collection, parts As Variant
+    Dim recordId As String, policyNo As String
+    Dim activity As String, dueAmount As String, dueDate As String
+    Dim cancelDate As String, policyStatus As String
+    Dim answer As String, note As String
+    Dim names As Variant, values As Variant
+    Dim row As Long, done As Long, blank As Long
+    Dim i As Long
+
+    Set wsInput = ThisWorkbook.Worksheets("Input")
+
+    Set policies = CrownPolicyRows("Verve")
+
+    If policies.Count = 0 Then
+        MsgBox "No Trisura (Verve) policies came back from the website.", vbExclamation, "Crown Superior"
+        Exit Sub
+    End If
+
+    If MsgBox(policies.Count & " Trisura (Verve) policies to look up, about " & _
+              Int(policies.Count / 12) + 1 & " minutes." & vbCrLf & vbCrLf & _
+              "Carry on?", vbYesNo + vbQuestion, "Crown Superior") <> vbYes Then
+        Exit Sub
+    End If
+
+    Set ws = CrownSheet("VervePayments")
+    ws.Cells.ClearContents
+    ws.Columns(2).NumberFormat = "@"
+    ws.Range("A1:H1").value = Array("Record number", "Policy number", "Amount due", "Due date", _
+                                    "Cancel date", "Policy status", "When", "What happened")
+    row = 2
+
+    Set clsDrv = New Chrm
+    Set clsDrv.ChrmDriver = New ChromeDriver
+    Set drv = clsDrv.ChrmDriver
+
+    On Error Resume Next
+    drv.AddArgument "--blink-settings=imagesEnabled=false"
+    drv.AddArgument "--disable-gpu"
+    drv.AddArgument "--disable-extensions"
+    drv.AddArgument "--disable-popup-blocking"
+    drv.AddArgument "--disable-notifications"
+    drv.AddArgument "--force-device-scale-factor=0.80"
+    drv.Start
+    On Error GoTo 0
+
+    drv.Get wsInput.Range("URL_9").value
+
+    If Not CrownWaitFor(drv, By, "ID", "LoginControl_LoginNameTextBox", 40) Then
+        MsgBox "Verve did not show its sign-in page. Nothing has been changed.", _
+               vbExclamation, "Crown Superior"
+        Exit Sub
+    End If
+
+    EnterData drv, Keys, "LoginControl_LoginNameTextBox", wsInput.Range("USER_2").value, "ID"
+    EnterData drv, Keys, "LoginControl_PasswordTextBox", wsInput.Range("PASS_2").value, "ID"
+    ClickElement drv, "LoginControl_LoginLinkButton", "ID"
+
+    ' The quick lookup box sits in the header of every page once signed
+    ' in, which is what lets this ask for one policy after another
+    ' without navigating back to anything.
+    If Not CrownWaitFor(drv, By, "ID", VERVE_LOOKUP_BOX, 60) Then
+        MsgBox "Signed in, but the quick policy lookup never appeared. " & _
+               "Nothing has been changed.", vbExclamation, "Crown Superior"
+        Exit Sub
+    End If
+
+    For i = 1 To policies.Count
+        parts = policies(i)
+        recordId = parts(0)
+        policyNo = Trim$(CStr(parts(2)))
+
+        If Len(policyNo) = 0 Then GoTo NextVerve
+
+        activity = ""
+        dueAmount = ""
+        dueDate = ""
+        cancelDate = ""
+        policyStatus = ""
+        note = ""
+
+        On Error Resume Next
+
+        EnterData drv, Keys, VERVE_LOOKUP_BOX, policyNo, "ID", "", True
+        ClickElement drv, VERVE_LOOKUP_GO, "ID"
+
+        If CrownWaitFor(drv, By, "XPATH", VERVE_BILLING_TAB, 25) Then
+            ClickElement drv, VERVE_BILLING_TAB, "XPATH"
+            drv.Wait 1000
+
+            ' Verve draws a grey panel over the figures while it fetches
+            ' them. Reading underneath it gives the last policy's numbers.
+            If Not WaitForPopupToDisappear(drv, 20000) Then
+                note = "Verve was still loading after twenty seconds"
+            End If
+
+            drv.Wait 400
+            activity = TryGetText(drv, VERVE_ACTIVITY, "ID", 3, 300)
+
+            If InStr(1, activity, "Installment For", vbTextCompare) > 0 Then
+                dueAmount = CrownMoney(CrownBetween(activity, "Installment For $", " due on"))
+                dueDate = CrownFirstDate(CrownAfter(activity, "due on"))
+                policyStatus = "Active"
+            ElseIf InStr(1, activity, "Cancel Date:", vbTextCompare) > 0 Then
+                cancelDate = CrownFirstDate(CrownAfter(activity, "Cancel Date:"))
+                dueDate = CrownFirstDate(TryGetText(drv, VERVE_DUE_DATE, "ID", 3, 300))
+                dueAmount = CrownMoney(TryGetText(drv, VERVE_BALANCE, "ID", 3, 300))
+                policyStatus = "Cx Notice"
+            ElseIf Len(Trim$(activity)) > 0 Then
+                ' Something else on that line. The two labels still hold
+                ' the figures; the status is left as it is rather than
+                ' guessed at from wording nobody has seen yet.
+                dueDate = CrownFirstDate(TryGetText(drv, VERVE_DUE_DATE, "ID", 3, 300))
+                dueAmount = CrownMoney(TryGetText(drv, VERVE_BALANCE, "ID", 3, 300))
+                note = "Verve said: " & Left$(activity, 80)
+            End If
+        Else
+            note = "no policy of that number at Verve"
+        End If
+
+        On Error GoTo 0
+
+        ws.Cells(row, 1).value = recordId
+        ws.Cells(row, 2).value = policyNo
+        ws.Cells(row, 3).value = dueAmount
+        ws.Cells(row, 4).value = dueDate
+        ws.Cells(row, 5).value = cancelDate
+        ws.Cells(row, 6).value = policyStatus
+        ws.Cells(row, 7).value = Now
+
+        If Len(Trim$(dueAmount)) = 0 And Len(Trim$(dueDate)) = 0 _
+           And Len(Trim$(cancelDate)) = 0 And Len(Trim$(policyStatus)) = 0 Then
+            ws.Cells(row, 8).value = Trim$("nothing found - left alone. " & note)
+            blank = blank + 1
+        Else
+            names = Array("Web_pymnt_due", "updated_due_date", "updated_cancel_date", _
+                          "Update_due_dates", "Last_Updated")
+            values = Array(dueAmount, CrownDate(dueDate), CrownDate(cancelDate), _
+                           "Yes", Format$(Now, "mm-dd-yyyy hh:mm AM/PM"))
+
+            ' The status is only sent when the page actually said one.
+            ' An empty one would write over what the website holds, and a
+            ' policy that quietly loses its status stops being called.
+            If Len(policyStatus) > 0 Then
+                names = CrownWith(names, "Status_")
+                values = CrownWith(values, policyStatus)
+            End If
+
+            answer = CrownUpdate(CROWN_FORM_POLICY, CLng(recordId), names, values)
+
+            If InStr(1, answer, """ok"":true", vbTextCompare) > 0 Then
+                ws.Cells(row, 8).value = Trim$("written. " & note)
+                done = done + 1
+            ElseIf Len(Trim$(answer)) = 0 Then
+                ws.Cells(row, 8).value = "website did not answer - run again for this one"
+            Else
+                ws.Cells(row, 8).value = "refused: " & answer
+            End If
+        End If
+
+        row = row + 1
+
+NextVerve:
+    Next i
+
+    ws.Activate
+
+    MsgBox policies.Count & " Trisura (Verve) policies looked up." & vbCrLf & _
+           done & " written back to the website." & vbCrLf & _
+           blank & " had nothing to read and were left as they were." & vbCrLf & vbCrLf & _
+           "See the VervePayments sheet for the detail.", vbInformation, "Crown Superior"
+End Sub
+
+' One more on the end of an array, without caring how long it was.
+Private Function CrownWith(ByVal list As Variant, ByVal extra As String) As Variant
+    Dim out() As String
+    Dim i As Long, n As Long
+
+    n = UBound(list) - LBound(list) + 1
+    ReDim out(0 To n)
+
+    For i = 0 To n - 1
+        out(i) = CStr(list(LBound(list) + i))
+    Next i
+
+    out(n) = extra
+    CrownWith = out
 End Function
