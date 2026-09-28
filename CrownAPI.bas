@@ -326,6 +326,29 @@ Public Function CrownCreate(ByVal formId As Long, _
     CrownCreate = CrownPost(body)
 End Function
 
+' Copy a record that already exists, changing only what is named.
+'
+' A renewed policy is the same customer, the same car and the same cover
+' with a new number and new dates. Rather than rebuild all of that from
+' here, this asks the website to take a copy of the old record and put the
+' handful of differences on top of it.
+'
+'   CrownClone 11, 12083, Array("Policy number", "Description"), _
+'                         Array("GAI -10202602", "Renewal")
+'
+' The reply carries the new record's id.
+Public Function CrownClone(ByVal formId As Long, ByVal sourceId As Long, _
+                           ByRef names As Variant, ByRef values As Variant) As String
+    Dim body As String
+
+    body = CrownBody("clone") _
+         & "&form=" & formId _
+         & "&id=" & sourceId _
+         & "&values=" & CrownEnc(CrownJson(names, values))
+
+    CrownClone = CrownPost(body)
+End Function
+
 Private Function CrownJson(ByRef names As Variant, ByRef values As Variant) As String
     Dim i As Long, out As String
 
