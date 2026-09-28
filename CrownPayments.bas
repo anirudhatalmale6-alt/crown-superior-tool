@@ -407,9 +407,13 @@ End Function
 ' number, the new dates and "Renewal" as the description. Nothing is
 ' created without being listed and agreed to first.
 
-' A date the way United writes it - 02/23/2026 - as something that can
-' be compared. Zero for anything that is not a date, so a blank cell or
-' an "N/A" sorts below every real date instead of above them.
+' A date the way United writes it, as something that can be compared.
+'
+' It writes them two ways on the same screen depending on where you are:
+' 02/23/2026 on one, 2026-02-23 on another. Four digits at the front is
+' the year, so month and day follow it; anything else is month first, the
+' American way. Zero for anything that is not a date at all, so a blank
+' or an "N/A" sorts below every real date instead of above them.
 Public Function CrownUsDate(ByVal text As String) As Double
     Dim parts() As String
     Dim d As Long, m As Long, y As Long
@@ -420,9 +424,15 @@ Public Function CrownUsDate(ByVal text As String) As Double
     parts = Split(text, "/")
     If UBound(parts) <> 2 Then Exit Function
 
-    m = Val(parts(0))
-    d = Val(parts(1))
-    y = Val(parts(2))
+    If Len(Trim$(parts(0))) = 4 Then
+        y = Val(parts(0))
+        m = Val(parts(1))
+        d = Val(parts(2))
+    Else
+        m = Val(parts(0))
+        d = Val(parts(1))
+        y = Val(parts(2))
+    End If
 
     If y < 100 Then y = 2000 + y
     If m < 1 Or m > 12 Then Exit Function
