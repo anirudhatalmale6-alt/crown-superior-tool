@@ -38,6 +38,23 @@ Private Const VERVE_ACTIVITY As String = "P_L_v212w3_t4_ActivityStringInsLabel"
 Private Const VERVE_DUE_DATE As String = "P_L_v212w3_t4_DueDateInsLabel"
 Private Const VERVE_BALANCE As String = "P_L_v212w3_t4_CurrentBalanceInsLabel"
 
+' The Amount Due report, which is the only place Verve says what a policy's
+' status is. The way to it is his, from ScrapeVervePaymentdue.
+Private Const VERVE_TOOLS_MENU As String = "AgencyToolsMenu"
+Private Const VERVE_REPORTS_LINK As String = "/html/body/form/div[5]/div[2]/div/table/tbody/tr/td[1]/div[1]/div[5]/div/table[2]/tbody/tr/td[2]/a"
+Private Const VERVE_AMOUNT_DUE As String = "P_L_OnlineReportsListForm_OnlineReportsdxGridView_DXCBtn13Img"
+Private Const VERVE_RPT_ACTIVE As String = "ctl00_P_L_ReportDisplayForm_ReportViewer1_ctl04_ctl03_ddValue"
+Private Const VERVE_RPT_START As String = "ctl00_P_L_ReportDisplayForm_ReportViewer1_ctl04_ctl05_txtValue"
+Private Const VERVE_RPT_COMPANY As String = "ctl00_P_L_ReportDisplayForm_ReportViewer1_ctl04_ctl09_ddValue"
+Private Const VERVE_RPT_DETAIL As String = "ctl00_P_L_ReportDisplayForm_ReportViewer1_ctl04_ctl19_rbTrue"
+Private Const VERVE_RPT_RUN As String = "ctl00_P_L_ReportDisplayForm_ReportViewer1_ctl04_ctl00"
+Private Const VERVE_RPT_EXPORT As String = "ctl00_P_L_ReportDisplayForm_ReportViewer1_ctl05_ctl04_ctl00_ButtonImgDown"
+
+' How long a policy has to have been cancelled before we stop asking about
+' it. His words: "Policies that have been cancelled for 60 days do not have
+' to be accounted for."
+Private Const CANCELLED_LONG_ENOUGH As Long = 60
+
 Private Const COL_POLICY As Long = 1     ' A  Policy Number
 Private Const COL_SITE As Long = 2       ' B  Website (the carrier)
 Private Const COL_FIRST As Long = 3      ' C  First Name
@@ -453,18 +470,32 @@ Public Function CrownUsDate(ByVal text As String) As Double
 End Function
 
 ' Which column holds what. Found by its heading rather than by counting,
-' because the order of them is United's business, not ours.
-Private Function CrownColumnOf(ByRef header() As String, ByVal wanted As String) As Long
+' because the order of them is the carrier's business, not ours.
+'
+' notThis keeps "Policy Status" from answering to a search for "polic".
+' A heading that has both words in it is tried only when nothing else
+' matches, so a report with a Policy Status column and no policy number
+' column still finds something rather than nothing.
+Private Function CrownColumnOf(ByRef header() As String, ByVal wanted As String, _
+                               Optional ByVal notThis As String = "") As Long
     Dim i As Long
+    Dim fallback As Long
 
     CrownColumnOf = -1
+    fallback = -1
 
     For i = LBound(header) To UBound(header)
         If InStr(1, header(i), wanted, vbTextCompare) > 0 Then
-            CrownColumnOf = i
-            Exit Function
+            If Len(notThis) = 0 Or InStr(1, header(i), notThis, vbTextCompare) = 0 Then
+                CrownColumnOf = i
+                Exit Function
+            End If
+
+            If fallback < 0 Then fallback = i
         End If
     Next i
+
+    CrownColumnOf = fallback
 End Function
 
 ' The result table as plain text: rows separated by ~, cells by |.
@@ -499,7 +530,7 @@ Private Function CrownUaigClickScript(ByVal rowIndex As Long) As String
 End Function
 
 ' Are we looking at one policy, or still at the list?
-Private Function CrownUaigOnPolicy(ByVal drv As Object) As Boolean
+Private Function CrownUaigOnPolicy(ByVal drv As ChromeDriver) As Boolean
     Dim answer As String
 
     On Error Resume Next
@@ -587,6 +618,40 @@ Private Function CrownUaigPickRow(ByVal listText As String, _
 End Function
 
 
+' A policy we can stop asking about.
+'
+'   "Policies that have been cancelled for 60 days do not have to be
+'    accounted for. maybe it could mean less work."
+'
+' Only where the website can prove it: a status that says cancelled AND a
+' cancel date more than sixty days behind us. A cancellation with no date
+' on it is still looked up, because nothing here knows how old it is - and
+' a policy skipped wrongly is one nobody ever looks at again.
+Private Function CrownLongCancelled(ByRef parts As Variant, ByRef since As String) As Boolean
+    Dim words As String
+    Dim cancelledOn As Double
+
+    since = ""
+
+    If UBound(parts) < 10 Then Exit Function
+
+    words = CStr(parts(6)) & " " & CStr(parts(7))
+
+    If InStr(1, words, "cancel", vbTextCompare) = 0 _
+       And InStr(1, words, "laps", vbTextCompare) = 0 Then
+        Exit Function
+    End If
+
+    cancelledOn = CrownUsDate(CStr(parts(10)))
+
+    If cancelledOn = 0 Then Exit Function
+    If cancelledOn > CDbl(Date) - CANCELLED_LONG_ENOUGH Then Exit Function
+
+    since = Trim$(CStr(parts(10)))
+    CrownLongCancelled = True
+End Function
+
+
 Public Sub CrownUaigPaymentDue()
     Dim drv As ChromeDriver, clsDrv As Chrm
     Dim By As New Selenium.By
@@ -602,6 +667,8 @@ Public Sub CrownUaigPaymentDue()
     Dim policyStatus As String, detailStatus As String
     Dim listText As String, note As String, answer As String, jsScript As String
     Dim row As Long, done As Long, blank As Long, pick As Long, madeCount As Long
+    Dim skipped As Long
+    Dim cancelledOn As String
     Dim i As Long
 
     Set wsInput = ThisWorkbook.Worksheets("Input")
@@ -670,6 +737,16 @@ Public Sub CrownUaigPaymentDue()
         policyDigits = CrownDigits(siteNumber)
 
         If Len(policyDigits) = 0 Then GoTo NextPolicy
+
+        ' Cancelled long enough ago that nothing about it can change.
+        If CrownLongCancelled(parts, cancelledOn) Then
+            ws.Cells(row, 1).value = recordId
+            ws.Cells(row, 2).value = siteNumber
+            ws.Cells(row, 11).value = "skipped - cancelled since " & cancelledOn
+            skipped = skipped + 1
+            row = row + 1
+            GoTo NextPolicy
+        End If
 
         dueAmount = ""
         dueDate = ""
@@ -822,7 +899,8 @@ NextPolicy:
 
     ws.Activate
 
-    MsgBox policies.Count & " United Auto policies looked up." & vbCrLf & _
+    MsgBox policies.Count & " United Auto policies on the website." & vbCrLf & _
+           skipped & " cancelled more than " & CANCELLED_LONG_ENOUGH & " days ago and passed over." & vbCrLf & _
            done & " written back to the website." & vbCrLf & _
            blank & " had nothing to read and were left as they were." & vbCrLf & _
            renewals.Count & " had been renewed under a new number, " & madeCount & " added." & vbCrLf & vbCrLf & _
@@ -968,7 +1046,7 @@ End Function
 ' in it, so an element that is present but never shown turns into a busy
 ' loop and Excel stops answering. Counted rather than timed, because
 ' Timer goes back to zero at midnight and a run can cross it.
-Private Function CrownWaitFor(ByVal drv As Object, ByVal By As Object, _
+Private Function CrownWaitFor(ByVal drv As ChromeDriver, ByVal By As Selenium.By, _
                               ByVal how As String, ByVal what As String, _
                               Optional ByVal seconds As Double = 20) As Boolean
     Dim tries As Long, most As Long
@@ -1082,7 +1160,9 @@ Public Sub CrownVervePaymentDue()
     Dim cancelDate As String, policyStatus As String
     Dim answer As String, note As String
     Dim names As Variant, values As Variant
-    Dim row As Long, done As Long, blank As Long
+    Dim statuses As Object
+    Dim reported As String, reportNote As String, cancelledOn As String
+    Dim row As Long, done As Long, blank As Long, skipped As Long
     Dim i As Long
 
     Set wsInput = ThisWorkbook.Worksheets("Input")
@@ -1133,6 +1213,12 @@ Public Sub CrownVervePaymentDue()
     EnterData drv, Keys, "LoginControl_PasswordTextBox", wsInput.Range("PASS_2").value, "ID"
     ClickElement drv, "LoginControl_LoginLinkButton", "ID"
 
+    ' The statuses first, from the Amount Due report - the only place
+    ' Verve says what a policy's status is. If any of that does not go to
+    ' plan it says so and the run carries on; the status worked out from
+    ' the billing line is worse than the report, not useless.
+    Set statuses = CrownVerveStatuses(drv, By, Keys, wsInput, reportNote)
+
     ' The quick lookup box sits in the header of every page once signed
     ' in, which is what lets this ask for one policy after another
     ' without navigating back to anything.
@@ -1148,6 +1234,15 @@ Public Sub CrownVervePaymentDue()
         policyNo = Trim$(CStr(parts(2)))
 
         If Len(policyNo) = 0 Then GoTo NextVerve
+
+        If CrownLongCancelled(parts, cancelledOn) Then
+            ws.Cells(row, 1).value = recordId
+            ws.Cells(row, 2).value = policyNo
+            ws.Cells(row, 8).value = "skipped - cancelled since " & cancelledOn
+            skipped = skipped + 1
+            row = row + 1
+            GoTo NextVerve
+        End If
 
         activity = ""
         dueAmount = ""
@@ -1191,6 +1286,17 @@ Public Sub CrownVervePaymentDue()
                 dueAmount = CrownMoney(TryGetText(drv, VERVE_BALANCE, "ID", 3, 300))
                 note = "Verve said: " & Left$(activity, 80)
             End If
+
+            ' What the report says beats what the billing line implies.
+            reported = ""
+
+            If statuses.Exists(UCase$(policyNo)) Then
+                reported = Trim$(CStr(statuses(UCase$(policyNo))))
+            ElseIf statuses.Exists(CrownDigits(policyNo)) Then
+                reported = Trim$(CStr(statuses(CrownDigits(policyNo))))
+            End If
+
+            If Len(reported) > 0 Then policyStatus = reported
         Else
             note = "no policy of that number at Verve"
         End If
@@ -1242,9 +1348,11 @@ NextVerve:
 
     ws.Activate
 
-    MsgBox policies.Count & " Trisura (Verve) policies looked up." & vbCrLf & _
+    MsgBox policies.Count & " Trisura (Verve) policies on the website." & vbCrLf & _
+           skipped & " cancelled more than " & CANCELLED_LONG_ENOUGH & " days ago and passed over." & vbCrLf & _
            done & " written back to the website." & vbCrLf & _
            blank & " had nothing to read and were left as they were." & vbCrLf & vbCrLf & _
+           reportNote & vbCrLf & vbCrLf & _
            "See the VervePayments sheet for the detail.", vbInformation, "Crown Superior"
 End Sub
 
@@ -1262,4 +1370,221 @@ Private Function CrownWith(ByVal list As Variant, ByVal extra As String) As Vari
 
     out(n) = extra
     CrownWith = out
+End Function
+
+' ---------------------------------------------------------------------
+' 5. The Amount Due report - only for the statuses
+' ---------------------------------------------------------------------
+'
+' Verve's policy page does not say whether a policy is in force; the
+' Amount Due report does. This fetches it the way his own macro does,
+' takes the two columns it needs, and leaves the file alone.
+'
+' His version deletes columns J:U, then F:H, then A:B, and works out what
+' is left by counting. That is right until Verve adds a column. This one
+' reads the heading row and looks for the words - and if the words are
+' not there it says so and prints the heading row it did get, so the next
+' run can be told exactly what to look for instead of guessing again.
+'
+' Nothing in here is allowed to stop the run. A missing report means the
+' status falls back to what the billing line implies, which is what it
+' was doing yesterday.
+
+' The newest .csv put in Downloads since a moment we noted before asking
+' for one.
+'
+' Chosen by when it arrived rather than by its name, so nothing depends on
+' what the download was called - and yesterday's report can never answer
+' for today's.
+Private Function CrownNewestCsvSince(ByVal notBefore As Date) As String
+    Dim fso As Object, folder As Object, file As Object
+    Dim best As String
+    Dim bestAt As Date
+
+    On Error Resume Next
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    Set folder = fso.GetFolder(Environ$("USERPROFILE") & "\Downloads")
+    On Error GoTo 0
+
+    If folder Is Nothing Then Exit Function
+
+    For Each file In folder.Files
+        If LCase$(fso.GetExtensionName(file.Name)) = "csv" Then
+            If file.DateLastModified >= notBefore And file.DateLastModified > bestAt Then
+                bestAt = file.DateLastModified
+                best = file.Path
+            End If
+        End If
+    Next file
+
+    CrownNewestCsvSince = best
+End Function
+
+' Two columns out of a csv, found by what their headings say.
+'
+' Opened for reading only: it is his download, in his Downloads folder,
+' and nothing here has any business changing it.
+'
+' Each row is filed twice, under the policy number as written and under
+' its digits alone, because no two systems here write a policy number the
+' same way.
+Private Function CrownCsvLookup(ByVal path As String, ByVal keyHeading As String, _
+                                ByVal valueHeading As String, ByRef heading As String, _
+                                ByRef found As Long) As Object
+    Dim map As Object
+    Dim parts() As String
+    Dim fileNumber As Integer
+    Dim line As String, key As String, digits As String, value As String
+    Dim keyAt As Long, valueAt As Long
+    Dim first As Boolean
+
+    Set map = CreateObject("Scripting.Dictionary")
+    Set CrownCsvLookup = map
+    heading = ""
+    found = 0
+
+    If Len(path) = 0 Then Exit Function
+
+    keyAt = -1
+    valueAt = -1
+    first = True
+
+    On Error GoTo Finished
+
+    fileNumber = FreeFile
+    Open path For Input As #fileNumber
+
+    Do Until EOF(fileNumber)
+        Line Input #fileNumber, line
+
+        If Len(Trim$(line)) > 0 Then
+            parts = CrownSplitCsvLine(line)
+
+            If first Then
+                heading = line
+                keyAt = CrownColumnOf(parts, keyHeading, valueHeading)
+                valueAt = CrownColumnOf(parts, valueHeading)
+                first = False
+
+                If keyAt < 0 Or valueAt < 0 Then Exit Do
+            ElseIf UBound(parts) >= keyAt And UBound(parts) >= valueAt Then
+                key = UCase$(Trim$(parts(keyAt)))
+                value = Trim$(parts(valueAt))
+
+                If Len(key) > 0 And Len(value) > 0 Then
+                    If Not map.Exists(key) Then
+                        map.Add key, value
+                        found = found + 1
+                    End If
+
+                    digits = CrownDigits(key)
+                    If Len(digits) > 0 And Not map.Exists(digits) Then map.Add digits, value
+                End If
+            End If
+        End If
+    Loop
+
+Finished:
+    Close #fileNumber
+End Function
+
+Private Function CrownVerveStatuses(ByVal drv As ChromeDriver, ByVal By As Selenium.By, _
+                                    ByVal Keys As Selenium.Keys, ByVal wsInput As Worksheet, _
+                                    ByRef note As String) As Object
+    Dim map As Object
+    Dim asked As Date
+    Dim path As String, heading As String
+    Dim tries As Long, found As Long
+
+    Set map = CreateObject("Scripting.Dictionary")
+    Set CrownVerveStatuses = map
+    note = "no statuses from the report - each one is as the billing line reads it"
+
+    On Error Resume Next
+
+    If Not CrownWaitFor(drv, By, "ID", VERVE_TOOLS_MENU, 30) Then
+        note = "Agency Tools never appeared - statuses are as the billing line reads them"
+        GoTo BackToTheSite
+    End If
+
+    ClickElement drv, VERVE_TOOLS_MENU, "ID"
+    drv.Wait 2000
+    ClickElement drv, VERVE_REPORTS_LINK, "XPATH"
+    drv.Wait 2000
+    drv.ExecuteScript "window.scrollTo(0, 168);"
+
+    If Not CrownWaitFor(drv, By, "ID", VERVE_AMOUNT_DUE, 30) Then
+        note = "the Amount Due report was not on the reports list - statuses are as the billing line reads them"
+        GoTo BackToTheSite
+    End If
+
+    ClickElement drv, VERVE_AMOUNT_DUE, "ID"
+    drv.Wait 2000
+
+    If Not CrownWaitFor(drv, By, "ID", VERVE_RPT_ACTIVE, 30) Then
+        note = "the report would not open - statuses are as the billing line reads them"
+        GoTo BackToTheSite
+    End If
+
+    SelectOption drv, VERVE_RPT_ACTIVE, "option", "ID", "Yes"
+
+    ' Six months back, the same window his own macro asks for.
+    EnterData drv, Keys, "//input[@id='" & VERVE_RPT_START & "']", _
+              Format$(DateAdd("m", -6, Date), "mm/dd/yyyy"), "XPATH", True, True
+
+    If CrownWaitFor(drv, By, "ID", VERVE_RPT_COMPANY, 30) Then
+        SelectOption drv, VERVE_RPT_COMPANY, "option", "ID", "Trisura Insurance Company"
+        drv.Wait 1000
+    End If
+
+    ClickElement drv, VERVE_RPT_DETAIL, "ID"
+    ClickElement drv, VERVE_RPT_RUN, "ID"
+
+    If Not CrownWaitFor(drv, By, "ID", VERVE_RPT_EXPORT, 90) Then
+        note = "the report did not finish running - statuses are as the billing line reads them"
+        GoTo BackToTheSite
+    End If
+
+    ' Noted before asking, so only a file that arrives after this counts.
+    asked = Now
+
+    ClickElement drv, VERVE_RPT_EXPORT, "ID"
+    drv.Wait 1000
+    drv.FindElementByLinkText("CSV (comma delimited)").Click
+
+    For tries = 1 To 60
+        path = CrownNewestCsvSince(asked)
+        If Len(path) > 0 Then Exit For
+        drv.Wait 500
+        DoEvents
+    Next tries
+
+    If Len(path) = 0 Then
+        note = "the report never arrived in Downloads - statuses are as the billing line reads them"
+        GoTo BackToTheSite
+    End If
+
+    Set map = CrownCsvLookup(path, "polic", "status", heading, found)
+    Set CrownVerveStatuses = map
+
+    If found = 0 Then
+        note = "the report came down but had no Policy and Status columns to read." & vbCrLf & _
+               "Its heading row was: " & Left$(heading, 180)
+    Else
+        note = found & " statuses read from the Amount Due report."
+    End If
+
+BackToTheSite:
+    ' Back to a signed-in page. The report has taken the window somewhere
+    ' the quick policy lookup does not exist.
+    drv.ExecuteScript "window.open(arguments[0])", wsInput.Range("URL_9").value
+    drv.SwitchToNextWindow
+
+    If CrownWaitFor(drv, By, "ID", "LoginControl_LoginNameTextBox", 20) Then
+        EnterData drv, Keys, "LoginControl_LoginNameTextBox", wsInput.Range("USER_2").value, "ID"
+        EnterData drv, Keys, "LoginControl_PasswordTextBox", wsInput.Range("PASS_2").value, "ID"
+        ClickElement drv, "LoginControl_LoginLinkButton", "ID"
+    End If
+
+    Err.Clear
 End Function
