@@ -29,6 +29,9 @@ Option Explicit
 ' A term cancelled or expired longer ago than this is of no use to anyone.
 Private Const UAIG_STALE_DAYS As Long = 60
 
+' Which copy of this file is in the workbook. Run CrownVersion to see it.
+Public Const CROWN_PAYMENTS_VERSION As String = "29 Sep - Verve, the phone dialog, renewals"
+
 ' The boxes and labels on Verve's own pages, named once so a change on
 ' their side is one line here rather than a hunt through the code.
 Private Const VERVE_LOOKUP_BOX As String = "QuickPolicyLookupControl_NumberInsCombo_I"
@@ -117,6 +120,34 @@ Public Function CrownPolicyRows(Optional ByVal carrier As String = "") As Collec
 
     Set CrownPolicyRows = rows
 End Function
+
+' Which copies of the two modules are in this workbook.
+'
+' File > Import does NOT replace a module of the same name, so a file can
+' be imported and the old one still be the one that runs. Two days went on
+' a fault that had been fixed a week earlier because neither of us could
+' answer this question without a screenshot of the code.
+'
+' CrownAPI is asked for by name rather than called directly, so that an old
+' CrownAPI reports itself as old instead of stopping the whole project from
+' compiling.
+Public Sub CrownVersion()
+    Dim apiStamp As String
+
+    On Error Resume Next
+    apiStamp = CStr(Application.Run("CrownApiStamp"))
+    On Error GoTo 0
+
+    If Len(Trim$(apiStamp)) = 0 Then
+        apiStamp = "an OLD copy." & vbCrLf & vbCrLf & _
+                   "Right-click CrownAPI in the list on the left, Remove CrownAPI, " & _
+                   "say No when it offers to export it, then File, Import File and " & _
+                   "pick the new one. Importing on top of it does not replace it."
+    End If
+
+    MsgBox "CrownPayments is " & CROWN_PAYMENTS_VERSION & vbCrLf & vbCrLf & _
+           "CrownAPI is " & apiStamp, vbInformation, "Crown Superior"
+End Sub
 
 ' The policies, by the digits in their policy number.
 Public Function CrownPolicyIndex(Optional ByVal carrier As String = "") As Object
@@ -652,6 +683,84 @@ Private Function CrownLongCancelled(ByRef parts As Variant, ByRef since As Strin
 End Function
 
 
+' The "Verify Phone number" dialog, out of the way.
+'
+' United puts it over the policy page. Everything underneath it is still
+' in the page, so nothing errors - the figures simply come back as they
+' were on the last policy, or as nothing at all.
+'
+' It only ever clicks the choice that says "Do not", never the other one.
+' If that wording is not there it closes the dialog instead and says so.
+' Nothing here is ever going to change a customer's telephone number
+' because a radio button moved.
+Private Function CrownDismissPhoneCheck(ByVal drv As ChromeDriver) As String
+    Dim answer As String
+
+    On Error Resume Next
+    answer = drv.ExecuteScript( _
+        "var box=null,small=0,all=document.querySelectorAll('div,table,form');" & _
+        "for(var i=0;i<all.length;i++){var e=all[i],t=e.innerText||'';" & _
+        "if(t.indexOf('Verify Phone number')<0)continue;" & _
+        "if(box===null||t.length<small){box=e;small=t.length;}}" & _
+        "if(!box)return '';" & _
+        "var picked=false,rs=box.querySelectorAll('input[type=radio]');" & _
+        "for(var r=0;r<rs.length;r++){var p=rs[r].parentNode," & _
+        "lbl=(p?(p.innerText||''):'')+((rs[r].nextSibling&&rs[r].nextSibling.textContent)||'');" & _
+        "if(lbl.indexOf('Do not')>=0){rs[r].click();picked=true;break;}}" & _
+        "if(picked){var bs=box.querySelectorAll('input[type=submit],input[type=button],button');" & _
+        "for(var b=0;b<bs.length;b++){var v=((bs[b].value||bs[b].innerText||'')+'').trim();" & _
+        "if(v.toLowerCase()=='submit'){bs[b].click();return 'phone check answered';}}" & _
+        "return 'phone check answered, no Submit found';}" & _
+        "var xs=box.querySelectorAll('a,span,button,img');" & _
+        "for(var x=0;x<xs.length;x++){var w=((xs[x].innerText||xs[x].title||'')+'').trim();" & _
+        "if(w=='×'||w=='x'||w.toLowerCase()=='close'){xs[x].click();return 'phone check closed';}}" & _
+        "return 'phone check in the way and would not close';")
+    On Error GoTo 0
+
+    CrownDismissPhoneCheck = answer
+End Function
+
+' What the policy page says about itself.
+'
+' It carries "Previous Policy Number" and "Rewritten Policy Number" -
+' United naming the term before this one and the term that replaced it -
+' along with the number, dates and status of the one being looked at. All
+' of that beats anything worked out from a list.
+'
+' Comes back as six parts separated by | :
+'   number | previous | rewritten | effective | expiration | status
+Private Function CrownUaigDetail(ByVal drv As ChromeDriver) As String
+    Dim answer As String
+
+    On Error Resume Next
+    answer = drv.ExecuteScript( _
+        "function tidy(s){return (s||'').replace(/\s+/g,' ').replace(/^ | $/g,'');}" & _
+        "var cells=document.getElementsByTagName('td');" & _
+        "function val(label){for(var i=0;i<cells.length;i++){" & _
+        "if(tidy(cells[i].innerText)!==label)continue;" & _
+        "for(var j=i+1;j<Math.min(i+3,cells.length);j++){" & _
+        "var v=tidy(cells[j].innerText);if(v)return v.replace(/[|]/g,' ');}" & _
+        "return '';}return '';}" & _
+        "return [val('Policy Number'),val('Previous Policy Number')," & _
+        "val('Rewritten Policy Number'),val('Policy Effective')," & _
+        "val('Policy Expiration'),val('Policy Status')].join('|');")
+    On Error GoTo 0
+
+    CrownUaigDetail = answer
+End Function
+
+' One of those six, or nothing.
+Private Function CrownPart(ByVal packed As String, ByVal which As Long) As String
+    Dim parts() As String
+
+    If Len(packed) = 0 Then Exit Function
+
+    parts = Split(packed, "|")
+
+    If which <= UBound(parts) Then CrownPart = Trim$(parts(which))
+End Function
+
+
 Public Sub CrownUaigPaymentDue()
     Dim drv As ChromeDriver, clsDrv As Chrm
     Dim By As New Selenium.By
@@ -666,6 +775,7 @@ Public Sub CrownUaigPaymentDue()
     Dim dueAmount As String, dueDate As String, cancelDate As String
     Dim policyStatus As String, detailStatus As String
     Dim listText As String, note As String, answer As String, jsScript As String
+    Dim detail As String, phoneNote As String
     Dim row As Long, done As Long, blank As Long, pick As Long, madeCount As Long
     Dim skipped As Long
     Dim cancelledOn As String
@@ -758,6 +868,7 @@ Public Sub CrownUaigPaymentDue()
         termExp = ""
         listStatus = ""
         note = ""
+        phoneNote = ""
 
         On Error Resume Next
 
@@ -766,6 +877,11 @@ Public Sub CrownUaigPaymentDue()
         drv.FindElementById("tbxPolicyNo").SendKeys policyDigits
         ClickElement drv, "btnSubmitPol1", "ID"
         drv.Wait 2000
+
+        ' Anything United has put over the page, out of the way first.
+        ' Held separately: the list summary is written into note below, and
+        ' would otherwise throw this away.
+        phoneNote = CrownDismissPhoneCheck(drv)
 
         ' A renewed policy answers with its terms instead of going
         ' straight to one of them.
@@ -794,6 +910,20 @@ Public Sub CrownUaigPaymentDue()
         ' the list as though it were a policy is how empty answers get
         ' written over good ones.
         If CrownUaigOnPolicy(drv) Then
+            phoneNote = Trim$(phoneNote & " " & CrownDismissPhoneCheck(drv))
+
+            ' What the page says about itself beats anything the list said.
+            detail = CrownUaigDetail(drv)
+
+            If Len(CrownPart(detail, 0)) > 0 Then liveNumber = CrownPart(detail, 0)
+            If Len(CrownPart(detail, 3)) > 0 Then termEff = CrownPart(detail, 3)
+            If Len(CrownPart(detail, 4)) > 0 Then termExp = CrownPart(detail, 4)
+
+            ' United saying, in as many words, that this term was replaced.
+            If Len(CrownPart(detail, 2)) > 0 Then
+                note = Trim$(note & " rewritten as " & CrownPart(detail, 2) & ".")
+            End If
+
             If drv.IsElementPresent(By.ID("CURAMTDUE")) Then
                 dueAmount = drv.FindElementById("CURAMTDUE").value
             End If
@@ -828,6 +958,8 @@ Public Sub CrownUaigPaymentDue()
         End If
 
         On Error GoTo 0
+
+        note = Trim$(note & " " & phoneNote)
 
         ' The list's own wording, unless the policy page gave a better one.
         policyStatus = detailStatus

@@ -55,6 +55,15 @@ Public Const CROWN_FORM_POLICY As Long = 11
 ' to find a line and paste into it. Asked for once, then remembered.
 ' ---------------------------------------------------------------------
 
+' Which copy of this file is in the workbook.
+'
+' File > Import does not replace a module of the same name - the old one
+' can still be sitting there - so there has to be a way to ask. Run
+' CrownVersion in the CrownPayments module to see this and its own.
+Public Function CrownApiStamp() As String
+    CrownApiStamp = "29 Sep - retries a dropped connection, and CrownClone"
+End Function
+
 Private Function CrownKey(Optional ByVal askIfMissing As Boolean = True) As String
     Dim nm As Object
     Dim value As String
