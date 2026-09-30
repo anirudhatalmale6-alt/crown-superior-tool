@@ -30,7 +30,7 @@ Option Explicit
 Private Const UAIG_STALE_DAYS As Long = 60
 
 ' Which copy of this file is in the workbook. Run CrownVersion to see it.
-Public Const CROWN_PAYMENTS_VERSION As String = "30 Sep - checks WHICH policy is on screen"
+Public Const CROWN_PAYMENTS_VERSION As String = "30 Sep b - checks WHICH policy is on screen, both carriers"
 
 ' The boxes and labels on Verve's own pages, named once so a change on
 ' their side is one line here rather than a hunt through the code.
@@ -1347,6 +1347,56 @@ Private Function CrownMoney(ByVal text As String) As String
 End Function
 
 
+' Is the policy we asked for actually on the screen?
+'
+' Punctuation out of both sides first: the website writes GAF20108199,
+' GAF-20108199 and GAF 20108199 for the same policy, and a check that says
+' no to all but one of those is worse than no check.
+Private Function CrownPageShows(ByVal drv As ChromeDriver, ByVal policyNo As String, _
+                                Optional ByVal seconds As Double = 15) As Boolean
+    Dim answer As String
+    Dim wanted As String
+    Dim i As Long, ch As String
+    Dim tries As Long, most As Long
+
+    For i = 1 To Len(policyNo)
+        ch = UCase$(Mid$(policyNo, i, 1))
+
+        If (ch >= "0" And ch <= "9") Or (ch >= "A" And ch <= "Z") Then wanted = wanted & ch
+    Next i
+
+    If Len(wanted) < 4 Then
+        CrownPageShows = True                 ' too short to tell anything from
+        Exit Function
+    End If
+
+    ' Waited for, not asked once. The page is still being fetched when this
+    ' is first called, and a check that runs too early says no to every
+    ' policy - which looks exactly like a check that is working.
+    most = CLng(seconds * 4)
+    If most < 1 Then most = 1
+
+    For tries = 1 To most
+        answer = ""
+
+        On Error Resume Next
+        answer = drv.ExecuteScript( _
+            "var t=(document.body?(document.body.innerText||''):'').toUpperCase()" & _
+            ".replace(/[^A-Z0-9]+/g,'');" & _
+            "return t.indexOf('" & wanted & "')>=0?'1':'0';")
+        On Error GoTo 0
+
+        If answer = "1" Then
+            CrownPageShows = True
+            Exit Function
+        End If
+
+        drv.Wait 250
+        DoEvents
+    Next tries
+End Function
+
+
 Public Sub CrownVervePaymentDue()
     Dim drv As ChromeDriver, clsDrv As Chrm
     Dim By As New Selenium.By
@@ -1454,7 +1504,12 @@ Public Sub CrownVervePaymentDue()
         EnterData drv, Keys, VERVE_LOOKUP_BOX, policyNo, "ID", "", True
         ClickElement drv, VERVE_LOOKUP_GO, "ID"
 
-        If CrownWaitFor(drv, By, "XPATH", VERVE_BILLING_TAB, 25) Then
+        If Not CrownPageShows(drv, policyNo) Then
+            ' Verve is still showing whatever it was showing before. Reading
+            ' it would put this customer's record on another customer's
+            ' figures, which is exactly what happened on United.
+            note = "Verve did not open this policy - nothing written"
+        ElseIf CrownWaitFor(drv, By, "XPATH", VERVE_BILLING_TAB, 25) Then
             ClickElement drv, VERVE_BILLING_TAB, "XPATH"
             drv.Wait 1000
 
@@ -1465,6 +1520,14 @@ Public Sub CrownVervePaymentDue()
             End If
 
             drv.Wait 400
+
+            ' Checked again after the tab has loaded: the first check was of
+            ' the page before this one.
+            If Not CrownPageShows(drv, policyNo, 5) Then
+                note = "the billing tab was showing another policy - nothing written"
+                GoTo VerveWrite
+            End If
+
             activity = TryGetText(drv, VERVE_ACTIVITY, "ID", 3, 300)
 
             If InStr(1, activity, "Installment For", vbTextCompare) > 0 Then
@@ -1499,6 +1562,7 @@ Public Sub CrownVervePaymentDue()
             note = "no policy of that number at Verve"
         End If
 
+VerveWrite:
         On Error GoTo 0
 
         ws.Cells(row, 1).value = recordId
