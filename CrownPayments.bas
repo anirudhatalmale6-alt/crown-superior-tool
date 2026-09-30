@@ -30,7 +30,7 @@ Option Explicit
 Private Const UAIG_STALE_DAYS As Long = 60
 
 ' Which copy of this file is in the workbook. Run CrownVersion to see it.
-Public Const CROWN_PAYMENTS_VERSION As String = "29 Sep - Verve, the phone dialog, renewals"
+Public Const CROWN_PAYMENTS_VERSION As String = "30 Sep - checks WHICH policy is on screen"
 
 ' The boxes and labels on Verve's own pages, named once so a change on
 ' their side is one line here rather than a hunt through the code.
@@ -776,6 +776,9 @@ Public Sub CrownUaigPaymentDue()
     Dim policyStatus As String, detailStatus As String
     Dim listText As String, note As String, answer As String, jsScript As String
     Dim detail As String, phoneNote As String
+    Dim pageDigits As String, chosenDigits As String
+    Dim wrongPage As Boolean
+    Dim lost As Long
     Dim row As Long, done As Long, blank As Long, pick As Long, madeCount As Long
     Dim skipped As Long
     Dim cancelledOn As String
@@ -869,10 +872,36 @@ Public Sub CrownUaigPaymentDue()
         listStatus = ""
         note = ""
         phoneNote = ""
+        chosenDigits = ""
 
         On Error Resume Next
 
-        LoopElementUntilFound drv, "tbxPolicyNo"
+        ' Bounded, and the answer is acted on. LoopElementUntilFound gives
+        ' up quietly after fifty tries, and everything that followed was
+        ' inside an On Error - so a search box that never came back looked
+        ' exactly like a search that worked.
+        If Not CrownWaitFor(drv, By, "ID", "tbxPolicyNo", 20) Then
+            lost = lost + 1
+            ws.Cells(row, 1).value = recordId
+            ws.Cells(row, 2).value = siteNumber
+            ws.Cells(row, 11).value = "the policy search box never came back - nothing written"
+            blank = blank + 1
+            row = row + 1
+
+            ' Three in a row means we are stuck on something, and another
+            ' hundred of these would just be the same screen read again.
+            If lost >= 3 Then
+                MsgBox "United stopped answering after " & (i - 1) & " policies." & vbCrLf & vbCrLf & _
+                       "Nothing has been written from the screen it is stuck on. " & _
+                       "Close the browser, look at what is on it, and run this again.", _
+                       vbExclamation, "Crown Superior"
+                Exit For
+            End If
+
+            GoTo NextPolicy
+        End If
+
+        lost = 0
         drv.FindElementById("tbxPolicyNo").Clear
         drv.FindElementById("tbxPolicyNo").SendKeys policyDigits
         ClickElement drv, "btnSubmitPol1", "ID"
@@ -900,6 +929,7 @@ Public Sub CrownUaigPaymentDue()
                 pick = CrownUaigPickRow(listText, liveNumber, termEff, termExp, listStatus, note)
 
                 If pick > 0 Then
+                    chosenDigits = CrownDigits(liveNumber)
                     drv.ExecuteScript CrownUaigClickScript(pick)
                     drv.Wait 2500
                 End If
@@ -909,11 +939,29 @@ Public Sub CrownUaigPaymentDue()
         ' Only read a policy if we are actually looking at one. Reading
         ' the list as though it were a policy is how empty answers get
         ' written over good ones.
+        wrongPage = False
+
         If CrownUaigOnPolicy(drv) Then
             phoneNote = Trim$(phoneNote & " " & CrownDismissPhoneCheck(drv))
 
             ' What the page says about itself beats anything the list said.
             detail = CrownUaigDetail(drv)
+            pageDigits = CrownDigits(CrownPart(detail, 0))
+
+            ' And the page has to BE the policy we went looking for.
+            '
+            ' A renewed policy legitimately opens under its other number, so
+            ' the term picked out of the list counts as a match too. Anything
+            ' else is another customer's screen, and nothing on it belongs on
+            ' this record.
+            If Len(pageDigits) = 0 Then
+                wrongPage = True
+                note = Trim$(note & " the page did not say which policy it was - nothing written")
+            ElseIf pageDigits <> policyDigits And pageDigits <> chosenDigits Then
+                wrongPage = True
+                note = Trim$(note & " United was still showing " & CrownPart(detail, 0) & _
+                             " - nothing written")
+            End If
 
             If Len(CrownPart(detail, 0)) > 0 Then liveNumber = CrownPart(detail, 0)
             If Len(CrownPart(detail, 3)) > 0 Then termEff = CrownPart(detail, 3)
@@ -958,6 +1006,17 @@ Public Sub CrownUaigPaymentDue()
         End If
 
         On Error GoTo 0
+
+        If wrongPage Then
+            dueAmount = ""
+            dueDate = ""
+            cancelDate = ""
+            detailStatus = ""
+            listStatus = ""
+            liveNumber = ""
+            termEff = ""
+            termExp = ""
+        End If
 
         note = Trim$(note & " " & phoneNote)
 
@@ -1021,6 +1080,13 @@ Public Sub CrownUaigPaymentDue()
 
 NextPolicy:
         On Error Resume Next
+
+        ' Clear the dialog BEFORE trying to navigate. It is modal - while it
+        ' is up these two clicks do nothing, the search box never comes back,
+        ' and the next policy gets read off this same screen. That is what
+        ' put one policy's figures onto seventy records.
+        CrownDismissPhoneCheck drv
+
         ClickElement drv, "//a[normalize-space(text())='Work with Policies']", "XPATH"
         ClickElement drv, "//a[normalize-space(text())='Policy Inquiry']", "XPATH"
         drv.Wait 800
