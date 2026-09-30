@@ -30,7 +30,7 @@ Option Explicit
 Private Const UAIG_STALE_DAYS As Long = 60
 
 ' Which copy of this file is in the workbook. Run CrownVersion to see it.
-Public Const CROWN_PAYMENTS_VERSION As String = "30 Sep b - checks WHICH policy is on screen, both carriers"
+Public Const CROWN_PAYMENTS_VERSION As String = "30 Sep c - opens each policy by its address"
 
 ' The boxes and labels on Verve's own pages, named once so a change on
 ' their side is one line here rather than a hunt through the code.
@@ -698,26 +698,75 @@ Private Function CrownDismissPhoneCheck(ByVal drv As ChromeDriver) As String
 
     On Error Resume Next
     answer = drv.ExecuteScript( _
-        "var box=null,small=0,all=document.querySelectorAll('div,table,form');" & _
-        "for(var i=0;i<all.length;i++){var e=all[i],t=e.innerText||'';" & _
-        "if(t.indexOf('Verify Phone number')<0)continue;" & _
-        "if(box===null||t.length<small){box=e;small=t.length;}}" & _
-        "if(!box)return '';" & _
-        "var picked=false,rs=box.querySelectorAll('input[type=radio]');" & _
-        "for(var r=0;r<rs.length;r++){var p=rs[r].parentNode," & _
-        "lbl=(p?(p.innerText||''):'')+((rs[r].nextSibling&&rs[r].nextSibling.textContent)||'');" & _
-        "if(lbl.indexOf('Do not')>=0){rs[r].click();picked=true;break;}}" & _
-        "if(picked){var bs=box.querySelectorAll('input[type=submit],input[type=button],button');" & _
-        "for(var b=0;b<bs.length;b++){var v=((bs[b].value||bs[b].innerText||'')+'').trim();" & _
-        "if(v.toLowerCase()=='submit'){bs[b].click();return 'phone check answered';}}" & _
+        "var rs=document.querySelectorAll('input[type=radio]'),pick=null;" & _
+        "function labelOf(r){var t='';" & _
+        "if(r.id){var l=document.querySelector('label[for=\""'+r.id+'\""]');if(l)t+=' '+(l.innerText||'');}" & _
+        "var n=r.nextSibling,hops=0;" & _
+        "while(n&&hops<6){if(n.nodeType===1&&n.tagName==='INPUT')break;" & _
+        "t+=' '+(n.textContent||'');n=n.nextSibling;hops++;}return t;}" & _
+        "for(var i=0;i<rs.length;i++){" & _
+        "if(/do\s*not\s*change\s*phone/i.test(labelOf(rs[i]))){pick=rs[i];break;}}" & _
+        "if(pick){pick.click();" & _
+        "var f=pick.form||document," & _
+        "bs=f.querySelectorAll('input[type=submit],input[type=button],button');" & _
+        "for(var b=0;b<bs.length;b++){" & _
+        "var v=((bs[b].value||bs[b].innerText||'')+'').replace(/^\s+|\s+$/g,'').toLowerCase();" & _
+        "if(v==='submit'){bs[b].click();return 'phone check answered';}}" & _
         "return 'phone check answered, no Submit found';}" & _
-        "var xs=box.querySelectorAll('a,span,button,img');" & _
-        "for(var x=0;x<xs.length;x++){var w=((xs[x].innerText||xs[x].title||'')+'').trim();" & _
-        "if(w=='×'||w=='x'||w.toLowerCase()=='close'){xs[x].click();return 'phone check closed';}}" & _
+        "if((document.body.innerText||'').indexOf('Verify Phone number')<0)return '';" & _
+        "var xs=document.querySelectorAll('a,span,button,img,div');" & _
+        "for(var x=0;x<xs.length;x++){var w=((xs[x].innerText||xs[x].title||'')+'')" & _
+        ".replace(/^\s+|\s+$/g,'');" & _
+        "if(w==='×'||w==='x'||w.toLowerCase()==='close'){xs[x].click();" & _
+        "return 'phone check closed';}}" & _
         "return 'phone check in the way and would not close';")
     On Error GoTo 0
 
     CrownDismissPhoneCheck = answer
+End Function
+
+' The address of one policy on United, so it can be opened without going
+' anywhere near the search box.
+'
+' A dialog left open on the last page can stop a click landing. It cannot
+' stop a navigation - the page is replaced either way - and that is what
+' keeps one stuck screen from being read as a hundred policies.
+'
+' The host is taken from wherever the browser already is rather than
+' written in, because the agent site is per state.
+Private Function CrownUaigPolicyUrl(ByVal drv As ChromeDriver, ByVal policyNo As String) As String
+    Dim here As String, host As String
+    Dim letters As String, digits As String
+    Dim i As Long, at As Long
+    Dim ch As String
+
+    digits = CrownDigits(policyNo)
+    If Len(digits) = 0 Then Exit Function
+
+    For i = 1 To Len(policyNo)
+        ch = UCase$(Mid$(policyNo, i, 1))
+
+        If ch >= "A" And ch <= "Z" Then
+            letters = letters & ch
+        ElseIf ch >= "0" And ch <= "9" Then
+            Exit For
+        End If
+    Next i
+
+    On Error Resume Next
+    here = CStr(drv.Url)
+    On Error GoTo 0
+
+    If Len(here) < 12 Then Exit Function
+
+    at = InStr(9, here, "/")
+    If at = 0 Then Exit Function
+
+    host = Left$(here, at - 1)
+
+    CrownUaigPolicyUrl = host & "/agents/ndmacro/cmn_Review.mac/ValidatePolicy" & _
+                         "?dbxPolcyPfx=" & letters & "&tbxPolicyNo=" & digits & _
+                         "&TRANSFLG=PE&strPolcntFlag=Y&strMtermFlag=Y"
 End Function
 
 ' What the policy page says about itself.
@@ -777,6 +826,8 @@ Public Sub CrownUaigPaymentDue()
     Dim listText As String, note As String, answer As String, jsScript As String
     Dim detail As String, phoneNote As String
     Dim pageDigits As String, chosenDigits As String
+    Dim policyUrl As String
+    Dim openedByUrl As Boolean
     Dim wrongPage As Boolean
     Dim lost As Long
     Dim row As Long, done As Long, blank As Long, pick As Long, madeCount As Long
@@ -876,6 +927,26 @@ Public Sub CrownUaigPaymentDue()
 
         On Error Resume Next
 
+        ' Straight to the policy's own address first. Nothing on the last
+        ' page can get in the way of a navigation.
+        openedByUrl = False
+        policyUrl = CrownUaigPolicyUrl(drv, siteNumber)
+
+        If Len(policyUrl) > 0 Then
+            drv.Get policyUrl
+            drv.Wait 1500
+            phoneNote = CrownDismissPhoneCheck(drv)
+
+            If CrownUaigOnPolicy(drv) Then openedByUrl = True
+        End If
+
+        ' The search box is the fallback, and still the way a renewed policy
+        ' is found - it is the search that answers with the list of terms.
+        If openedByUrl Then
+            lost = 0
+            GoTo ReadThePolicy
+        End If
+
         ' Bounded, and the answer is acted on. LoopElementUntilFound gives
         ' up quietly after fifty tries, and everything that followed was
         ' inside an On Error - so a search box that never came back looked
@@ -939,6 +1010,7 @@ Public Sub CrownUaigPaymentDue()
         ' Only read a policy if we are actually looking at one. Reading
         ' the list as though it were a policy is how empty answers get
         ' written over good ones.
+ReadThePolicy:
         wrongPage = False
 
         If CrownUaigOnPolicy(drv) Then
