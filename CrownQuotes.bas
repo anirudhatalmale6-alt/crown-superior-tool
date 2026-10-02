@@ -72,7 +72,12 @@ Public Sub CrownFetchNewQuotes()
 
     kept = CrownKeepThem()
 
-    If highest > since Then CrownSaveLastQuoteId highest
+    ' Only remember the number if they actually landed. Saved regardless,
+    ' a failure in the middle of the placing would skip those quotes for
+    ' good and nothing would ever say so.
+    If InStr(1, kept, "NOT added") = 0 And highest > since Then
+        CrownSaveLastQuoteId highest
+    End If
 
     MsgBox brought & " new quote(s) brought in." & vbCrLf & _
            kept & vbCrLf & _
@@ -634,7 +639,132 @@ Private Function CrownKeepThem() As String
 End Function
 
 ' ---------------------------------------------------------------------
-' 4. Handing it to the tool
+' 4. One quote onto Edit Data
+' ---------------------------------------------------------------------
+'
+' Stand on the row you want on Crown Quote List and run this. That
+' customer goes onto Edit Data and you can quote them.
+'
+' RetrieveDataByRowNumber reads a row number out of Edit Data C5 and takes
+' that row off Output, so this puts the heading row and the one quote on
+' Output and points C5 at row 2. That is the same state you were getting
+' to by clearing Output down to a single row by hand.
+
+Public Sub CrownQuoteToEditData()
+    Dim list As Worksheet, output As Worksheet, edit As Worksheet
+    Dim columns As Long, lastRow As Long, wanted As Long
+    Dim answer As String
+    Dim who As String
+
+    On Error Resume Next
+    Set list = ThisWorkbook.Sheets("Crown Quote List")
+    Set output = ThisWorkbook.Sheets("Output")
+    Set edit = ThisWorkbook.Sheets("Edit Data")
+    On Error GoTo 0
+
+    If list Is Nothing Or output Is Nothing Or edit Is Nothing Then
+        MsgBox "This needs the Crown Quote List, Output and Edit Data sheets.", _
+               vbExclamation, "Crown Superior"
+        Exit Sub
+    End If
+
+    columns = list.Cells(1, list.Columns.Count).End(xlToLeft).Column
+    lastRow = CrownLastUsedRow(list, columns)
+
+    If columns < 2 Or lastRow < 2 Then
+        MsgBox "There are no quotes on Crown Quote List yet." & vbCrLf & vbCrLf & _
+               "Run CrownFetchNewQuotes or CrownImportQuoteFile first.", _
+               vbExclamation, "Crown Superior"
+        Exit Sub
+    End If
+
+    ' The row the cursor is on, when the cursor is on that sheet. Otherwise
+    ' ask, because guessing which customer he meant is not a thing to do.
+    wanted = 0
+
+    ' Guarded: Selection is not always a range - click a picture or a chart
+    ' and asking it for a row stops the macro with an error instead of
+    ' asking which customer was meant.
+    If ActiveSheet Is list Then
+        On Error Resume Next
+
+        If TypeName(Selection) = "Range" Then
+            If Selection.Row >= 2 And Selection.Row <= lastRow Then wanted = Selection.Row
+        End If
+
+        On Error GoTo 0
+    End If
+
+    If wanted = 0 Then
+        answer = InputBox("Which row of Crown Quote List?" & vbCrLf & vbCrLf & _
+                          "Quotes are on rows 2 to " & lastRow & "." & vbCrLf & _
+                          "(Or close this, click the row you want on that sheet, and run it again.)", _
+                          "Crown Superior")
+
+        If Len(Trim$(answer)) = 0 Then Exit Sub
+        If Not IsNumeric(answer) Then
+            MsgBox "That is not a row number.", vbExclamation, "Crown Superior"
+            Exit Sub
+        End If
+
+        wanted = CLng(answer)
+    End If
+
+    If wanted < 2 Or wanted > lastRow Then
+        MsgBox "Row " & wanted & " is not one of the quotes. They are on rows 2 to " & _
+               lastRow & ".", vbExclamation, "Crown Superior"
+        Exit Sub
+    End If
+
+    who = CrownWhoIsOnRow(list, columns, wanted)
+
+    Application.ScreenUpdating = False
+
+    output.Cells.Clear
+    list.Range(list.Cells(1, 1), list.Cells(1, columns)).Copy output.Cells(1, 1)
+    list.Range(list.Cells(wanted, 1), list.Cells(wanted, columns)).Copy
+    output.Cells(2, 1).PasteSpecial xlPasteValues
+    Application.CutCopyMode = False
+
+    edit.Range("C5").value = 2
+
+    Application.ScreenUpdating = True
+
+    RetrieveDataByRowNumber
+
+    On Error Resume Next
+    edit.Activate
+    On Error GoTo 0
+
+    MsgBox "On Edit Data now:" & vbCrLf & vbCrLf & "   " & who & vbCrLf & vbCrLf & _
+           "Output is holding that one quote. Crown Quote List still has all of them.", _
+           vbInformation, "Crown Superior"
+End Sub
+
+' Whose quote is on this row, for the message - so he can see at a glance
+' that the right customer landed.
+Private Function CrownWhoIsOnRow(ByVal ws As Worksheet, ByVal columns As Long, _
+                                 ByVal row As Long) As String
+    Dim first As Long, last As Long, email As Long
+
+    first = CrownColumnNamed(ws, columns, "First Name")
+    last = CrownColumnNamed(ws, columns, "Last Name")
+    email = CrownColumnNamed(ws, columns, "E-mail")
+
+    If email = 0 Then email = CrownColumnNamed(ws, columns, "Email")
+
+    If first > 0 Then CrownWhoIsOnRow = Trim$(CStr(ws.Cells(row, first).value))
+    If last > 0 Then CrownWhoIsOnRow = Trim$(CrownWhoIsOnRow & " " & CStr(ws.Cells(row, last).value))
+
+    If email > 0 And Len(Trim$(CStr(ws.Cells(row, email).value))) > 0 Then
+        CrownWhoIsOnRow = Trim$(CrownWhoIsOnRow & "   " & CStr(ws.Cells(row, email).value))
+    End If
+
+    If Len(Trim$(CrownWhoIsOnRow)) = 0 Then CrownWhoIsOnRow = "row " & row
+End Function
+
+' ---------------------------------------------------------------------
+' 5. Handing it to the tool
 ' ---------------------------------------------------------------------
 
 Private Function CrownWriteTemp(ByVal csv As String, ByVal prefix As String) As String
