@@ -23,13 +23,18 @@ Option Explicit
 ' the one the chatbot writes into.
 Private Const QUOTE_SHEET_FIRST As String = "saved_at"
 
+' Where the website's quote number lands once your own import has placed
+' it - m54 sends SubmissionId to this column. It is what tells a quote
+' already on the list from a new one.
+Private Const QUOTE_ID_HEADING As String = "Submitter's User ID"
+
 
 ' ---------------------------------------------------------------------
 ' 1. The website's quotes, only what is new
 ' ---------------------------------------------------------------------
 
 Public Sub CrownFetchNewQuotes()
-    Dim csv As String, path As String
+    Dim csv As String, path As String, kept As String
     Dim lines() As String
     Dim highest As Long, since As Long
     Dim brought As Long
@@ -65,9 +70,12 @@ Public Sub CrownFetchNewQuotes()
 
     CrownHandToTool path
 
+    kept = CrownKeepThem()
+
     If highest > since Then CrownSaveLastQuoteId highest
 
-    MsgBox brought & " new quote(s) brought in and put on Output." & vbCrLf & _
+    MsgBox brought & " new quote(s) brought in." & vbCrLf & _
+           kept & vbCrLf & _
            "Edit Data is showing the row you had open." & vbCrLf & vbCrLf & _
            "Next time this will start from quote number " & highest & ".", _
            vbInformation, "Crown Superior"
@@ -146,7 +154,8 @@ Public Sub CrownImportQuoteFile()
     ' the shape the tool reads.
     If CrownLooksLikeExport(CStr(picked)) Then
         CrownHandToTool CStr(picked)
-        MsgBox "Brought in. Edit Data is showing the row you had open.", _
+        MsgBox "Brought in." & vbCrLf & CrownKeepThem() & vbCrLf & _
+               "Edit Data is showing the row you had open.", _
                vbInformation, "Crown Superior"
         Exit Sub
     End If
@@ -174,7 +183,7 @@ Public Sub CrownImportQuoteFile()
     path = CrownWriteTemp(csv, "crown-quotefile-")
     CrownHandToTool path
 
-    MsgBox "Brought in and put on Output." & vbCrLf & _
+    MsgBox "Brought in." & vbCrLf & CrownKeepThem() & vbCrLf & _
            "Edit Data is showing the row you had open.", vbInformation, "Crown Superior"
 End Sub
 
@@ -457,6 +466,172 @@ Private Function CrownJoinCsv(ByRef cells() As String) As String
     CrownJoinCsv = out
 End Function
 
+
+' ---------------------------------------------------------------------
+' 3. Keeping them on Crown Quote List
+' ---------------------------------------------------------------------
+'
+' Output is whatever was brought in just now - it gets cleared and rebuilt
+' every time. Crown Quote List is the one that keeps them.
+'
+' Nothing is mapped here. Both sheets are built from the same list of
+' headings by your own code, so a row can be copied straight across. That
+' is checked before anything moves: if the two heading rows ever stop
+' agreeing, this stops and says so rather than putting a date of birth
+' under Gender.
+'
+' The website's quote number arrives in the "Submitter's User ID" column -
+' that is where your m54 puts it - so a quote already on the list is
+' recognised and left alone.
+Private Function CrownAppendToQuoteList(ByRef added As Long, ByRef already As Long, _
+                                        ByRef why As String) As Boolean
+    Dim source As Worksheet, target As Worksheet
+    Dim seen As Object
+    Dim lastSourceRow As Long, lastTargetRow As Long, columns As Long
+    Dim idColumn As Long
+    Dim r As Long, c As Long
+    Dim id As String
+
+    added = 0
+    already = 0
+    why = ""
+
+    On Error Resume Next
+    Set source = ThisWorkbook.Sheets("Output")
+    Set target = ThisWorkbook.Sheets("Crown Quote List")
+    On Error GoTo 0
+
+    If source Is Nothing Then
+        why = "there is no Output sheet"
+        Exit Function
+    End If
+
+    If target Is Nothing Then
+        why = "there is no Crown Quote List sheet"
+        Exit Function
+    End If
+
+    columns = source.Cells(1, source.Columns.Count).End(xlToLeft).Column
+
+    If columns < 2 Then
+        why = "Output has no headings on it"
+        Exit Function
+    End If
+
+    lastSourceRow = CrownLastUsedRow(source, columns)
+
+    If lastSourceRow < 2 Then
+        CrownAppendToQuoteList = True              ' nothing came in; nothing to do
+        Exit Function
+    End If
+
+    ' An empty list gets Output's headings, so the first run sets it up.
+    If Len(Trim$(CStr(target.Cells(1, 1).value))) = 0 Then
+        source.Range(source.Cells(1, 1), source.Cells(1, columns)).Copy _
+            target.Cells(1, 1)
+        Application.CutCopyMode = False
+    End If
+
+    If Not CrownSameHeadings(source, target, columns, why) Then Exit Function
+
+    idColumn = CrownColumnNamed(target, columns, QUOTE_ID_HEADING)
+    lastTargetRow = CrownLastUsedRow(target, columns)
+
+    Set seen = CreateObject("Scripting.Dictionary")
+    seen.CompareMode = 1
+
+    If idColumn > 0 Then
+        For r = 2 To lastTargetRow
+            id = Trim$(CStr(target.Cells(r, idColumn).value))
+            If Len(id) > 0 And Not seen.Exists(id) Then seen.Add id, True
+        Next r
+    End If
+
+    For r = 2 To lastSourceRow
+        id = ""
+        If idColumn > 0 Then id = Trim$(CStr(source.Cells(r, idColumn).value))
+
+        If Len(id) > 0 And seen.Exists(id) Then
+            already = already + 1
+        Else
+            lastTargetRow = lastTargetRow + 1
+
+            source.Range(source.Cells(r, 1), source.Cells(r, columns)).Copy
+            target.Cells(lastTargetRow, 1).PasteSpecial xlPasteValues
+            Application.CutCopyMode = False
+
+            If Len(id) > 0 Then seen.Add id, True
+            added = added + 1
+        End If
+    Next r
+
+    CrownAppendToQuoteList = True
+End Function
+
+' The last row with anything on it, looked for across the whole width.
+' Column A alone is not safe - a quote with no source on it leaves A empty.
+Private Function CrownLastUsedRow(ByVal ws As Worksheet, ByVal columns As Long) As Long
+    Dim found As Range
+
+    On Error Resume Next
+    Set found = ws.Range(ws.Cells(1, 1), ws.Cells(ws.Rows.Count, columns)) _
+        .Find(What:="*", SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
+    On Error GoTo 0
+
+    If Not found Is Nothing Then CrownLastUsedRow = found.Row
+End Function
+
+Private Function CrownSameHeadings(ByVal source As Worksheet, ByVal target As Worksheet, _
+                                   ByVal columns As Long, ByRef why As String) As Boolean
+    Dim c As Long
+    Dim a As String, b As String
+
+    For c = 1 To columns
+        a = Trim$(CStr(source.Cells(1, c).value))
+        b = Trim$(CStr(target.Cells(1, c).value))
+
+        If StrComp(a, b, vbTextCompare) <> 0 Then
+            why = "the headings on Output and Crown Quote List stopped agreeing at column " & c & _
+                  " - Output says """ & a & """ and the list says """ & b & """." & vbCrLf & _
+                  "Nothing has been copied. Rebuild the list with your usual import and try again."
+            Exit Function
+        End If
+    Next c
+
+    CrownSameHeadings = True
+End Function
+
+Private Function CrownColumnNamed(ByVal ws As Worksheet, ByVal columns As Long, _
+                                  ByVal heading As String) As Long
+    Dim c As Long
+
+    For c = 1 To columns
+        If StrComp(Trim$(CStr(ws.Cells(1, c).value)), heading, vbTextCompare) = 0 Then
+            CrownColumnNamed = c
+            Exit Function
+        End If
+    Next c
+End Function
+
+' Everything after the tool has filled Output: put the new ones on the
+' list, and say what happened.
+Private Function CrownKeepThem() As String
+    Dim added As Long, already As Long
+    Dim why As String
+
+    If Not CrownAppendToQuoteList(added, already, why) Then
+        CrownKeepThem = "NOT added to Crown Quote List - " & why
+        Exit Function
+    End If
+
+    CrownKeepThem = added & " added to Crown Quote List"
+
+    If already > 0 Then
+        CrownKeepThem = CrownKeepThem & ", " & already & " were already on it"
+    End If
+
+    CrownKeepThem = CrownKeepThem & "."
+End Function
 
 ' ---------------------------------------------------------------------
 ' 4. Handing it to the tool
