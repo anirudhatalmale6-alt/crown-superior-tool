@@ -141,6 +141,42 @@ Private Function CrownHighestId(ByRef lines() As String) As Long
 End Function
 
 
+' Start again from an older quote.
+'
+' CrownFetchNewQuotes counts forward from the last one it brought in, which
+' is what stops it fetching the same quotes twice. If you ever need the
+' older ones back - a sheet rebuilt, or something missed - this is how you
+' tell it where to start. The next fetch brings in everything after the
+' number you give it.
+Public Sub CrownFetchQuotesFrom()
+    Dim answer As String
+    Dim since As Long
+
+    since = CrownLastQuoteId()
+
+    answer = InputBox( _
+        "The next fetch will bring in quotes NEWER than this number." & vbCrLf & vbCrLf & _
+        "It is " & since & " at the moment." & vbCrLf & _
+        "Put in a lower number to pick up older quotes, or 0 for all of them." & vbCrLf & vbCrLf & _
+        "Nothing is fetched now - run CrownFetchNewQuotes afterwards.", _
+        "Crown Superior", CStr(since))
+
+    If Len(Trim$(answer)) = 0 Then Exit Sub
+
+    If Not IsNumeric(answer) Then
+        MsgBox "That is not a quote number.", vbExclamation, "Crown Superior"
+        Exit Sub
+    End If
+
+    CrownSaveLastQuoteId CLng(Val(answer))
+
+    MsgBox "Set to " & CLng(Val(answer)) & "." & vbCrLf & vbCrLf & _
+           "Run CrownFetchNewQuotes and it will bring in everything after that." & vbCrLf & _
+           "Anything already on Crown Quote List is recognised and not added twice.", _
+           vbInformation, "Crown Superior"
+End Sub
+
+
 ' ---------------------------------------------------------------------
 ' 2. A file, picked by hand, the old way
 ' ---------------------------------------------------------------------

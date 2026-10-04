@@ -503,40 +503,23 @@ Public Sub CrownTestConnection()
 End Sub
 
 ' The newest quotes, onto a sheet of their own.
+' Retired, and left here saying so.
+'
+' It asked "how many of the newest quotes" and then asked the website for
+' them starting from the beginning - and the website answers a question
+' like that oldest first, because it is built for walking forward from
+' where you got to last time. So asking for a hundred of the newest
+' handed back the oldest hundred, which is why quotes from 2024 arrived.
+'
+' It also wrote them to a sheet of its own, which is not the sheet the
+' rest of this works from. Two lists of quotes is one too many.
 Public Sub CrownLoadQuotes()
-    Dim how As String, count As Long, written As Long, lastId As Long
-    Dim target As Object
-
-    If Len(CrownKey()) = 0 Then
-        MsgBox "No key yet - run CrownTestConnection and paste it when it asks.", vbExclamation, "Crown Superior"
-        Exit Sub
-    End If
-
-    how = InputBox("How many of the newest quotes would you like?", "Crown Superior", "25")
-    If Len(Trim$(how)) = 0 Then Exit Sub
-    If Not IsNumeric(how) Then
-        MsgBox "That is not a number.", vbExclamation, "Crown Superior"
-        Exit Sub
-    End If
-
-    count = CLng(how)
-    If count < 1 Then count = 1
-    If count > 500 Then count = 500
-
-    Set target = CrownSheet("Crown Quotes")
-    target.Cells.ClearContents
-
-    written = CrownListToSheet(target, CROWN_FORM_QUOTE, 0, count, _
-        "First Name,Last Name,Date of Birth ,Gender,Marital Status ," & _
-        "Address,CIty,State,Zip_Code,Phone number ,Email," & _
-        "Drivers License Number,DL_state,Vin_Number,Year,Make,Model," & _
-        "Salesperson,Name_of_the_dealership,Referred_by,Policy_No,Insurance_Co_Name", lastId)
-
-    target.Activate
-
-    MsgBox written & " quote(s) written to the Crown Quotes sheet." & vbCrLf & _
-           "The first column is the quote number - that is what you give back when you write a quote back.", _
-           vbInformation, "Crown Superior"
+    MsgBox "This one has been replaced." & vbCrLf & vbCrLf & _
+           "Use CrownFetchNewQuotes instead. It brings in the quotes that have " & _
+           "come in since the last time and puts them on Crown Quote List, " & _
+           "which is the sheet CrownQuoteToEditData reads from." & vbCrLf & vbCrLf & _
+           "The Crown Quotes tab this used to make can be deleted - nothing " & _
+           "reads it.", vbInformation, "Crown Superior"
 End Sub
 
 ' A finished quote, back onto the website.
