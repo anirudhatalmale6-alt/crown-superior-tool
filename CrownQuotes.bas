@@ -177,6 +177,72 @@ Public Sub CrownFetchQuotesFrom()
 End Sub
 
 
+' Put the two heading rows side by side so the difference can be seen.
+'
+' When the append refuses it names the first column where Output and Crown
+' Quote List disagree, which is enough to know something is wrong but not
+' always enough to know why. This writes both rows out in full, marks every
+' column where they differ, and leaves it on a sheet you can send me.
+'
+' It reads only. Nothing is copied, changed or cleared by it.
+Public Sub CrownCompareQuoteHeadings()
+    Dim output As Worksheet, list As Worksheet, out As Worksheet
+    Dim wide As Long, c As Long, differences As Long
+    Dim a As String, b As String
+
+    On Error Resume Next
+    Set output = ThisWorkbook.Sheets("Output")
+    Set list = ThisWorkbook.Sheets("Crown Quote List")
+    On Error GoTo 0
+
+    If output Is Nothing Or list Is Nothing Then
+        MsgBox "This needs both the Output and Crown Quote List sheets.", _
+               vbExclamation, "Crown Superior"
+        Exit Sub
+    End If
+
+    wide = output.Cells(1, output.Columns.Count).End(xlToLeft).Column
+
+    If list.Cells(1, list.Columns.Count).End(xlToLeft).Column > wide Then
+        wide = list.Cells(1, list.Columns.Count).End(xlToLeft).Column
+    End If
+
+    If wide < 1 Then
+        MsgBox "Neither sheet has any headings on it.", vbExclamation, "Crown Superior"
+        Exit Sub
+    End If
+
+    Set out = CrownSheet("Quote Headings")
+    out.Cells.ClearContents
+    out.Range("A1:D1").value = Array("Column", "Output says", "Crown Quote List says", "Same?")
+
+    For c = 1 To wide
+        a = Trim$(CStr(output.Cells(1, c).value))
+        b = Trim$(CStr(list.Cells(1, c).value))
+
+        out.Cells(c + 1, 1).value = c
+        out.Cells(c + 1, 2).value = a
+        out.Cells(c + 1, 3).value = b
+
+        If StrComp(a, b, vbTextCompare) = 0 Then
+            out.Cells(c + 1, 4).value = "yes"
+        Else
+            out.Cells(c + 1, 4).value = "NO"
+            differences = differences + 1
+        End If
+    Next c
+
+    out.Columns("A:D").AutoFit
+    out.Activate
+
+    MsgBox wide & " columns compared." & vbCrLf & _
+           differences & " of them differ." & vbCrLf & vbCrLf & _
+           "The Quote Headings sheet has both rows side by side. Send me that " & _
+           "sheet and I will tell you which import to run.", _
+           vbInformation, "Crown Superior"
+End Sub
+
+
 ' ---------------------------------------------------------------------
 ' 2. A file, picked by hand, the old way
 ' ---------------------------------------------------------------------
